@@ -69,6 +69,12 @@ public sealed class AnalyticsClient
 			_ = FlushAsync();
 	}
 
+	/// <summary>
+	/// Send one batch. Best-effort and non-exclusive: concurrent calls each take an
+	/// independent slice of the buffer, so a failed send re-queues behind newer
+	/// events (ordering is approximate). Never throws — a misbehaving sender is
+	/// caught and logged so fire-and-forget callers don't leak unobserved faults.
+	/// </summary>
 	public async Task FlushAsync()
 	{
 		if ( !Enabled )
@@ -78,9 +84,17 @@ public sealed class AnalyticsClient
 		if ( batch.Count == 0 )
 			return;
 
-		var ok = await _sender.SendAsync( batch, _apiKey, _options.IngestUrl );
-		if ( !ok )
+		try
+		{
+			var ok = await _sender.SendAsync( batch, _apiKey, _options.IngestUrl );
+			if ( !ok )
+				_buffer.Requeue( batch );
+		}
+		catch ( Exception e )
+		{
 			_buffer.Requeue( batch );
+			Log.Warning( $"[Analytics] flush error: {e.Message}" );
+		}
 	}
 
 	/// <summary>Emit session_end, stop the loop, and flush everything that remains.</summary>
@@ -91,6 +105,8 @@ public sealed class AnalyticsClient
 
 		_cts?.Cancel();
 		await FlushAsync();
+		_cts?.Dispose();
+		_cts = null;
 	}
 
 	async Task FlushLoop( CancellationToken ct )
@@ -110,7 +126,9 @@ public sealed class AnalyticsClient
 		}
 	}
 
-	// --- test-only inspection helpers ---
+	// --- test-only inspection helper ---
+	// Destructive: drains the buffer and re-queues it. Single-threaded test use only,
+	// not safe to call while the flush loop is running.
 	internal AnalyticsEvent PeekLast()
 	{
 		var batch = _buffer.TakeBatch();

@@ -29,6 +29,7 @@ public class AnalyticsClientTests
 		client.Start();
 
 		Assert.AreEqual( 1, client.PendingCount );
+		Assert.AreEqual( "session_start", client.PeekLast().Type );
 	}
 
 	[TestMethod]
