@@ -31,9 +31,10 @@ public sealed class TrackAttribute : Attribute
 
 		var attr = m.GetAttribute<TrackAttribute>();
 		var type = string.IsNullOrEmpty( attr?.Name ) ? m.MethodName : attr!.Name!;
-		var declaringType = m.Object?.GetType();
-		var props = attr is { Params: true } && declaringType is not null
-			? CaptureArgs( m.MethodIdentity, declaringType, args )
+		// m.Object is null for static methods; CaptureArgs still captures values
+		// under positional arg0/arg1 names when the declaring type can't resolve.
+		var props = attr is { Params: true }
+			? CaptureArgs( m.MethodIdentity, m.Object?.GetType(), args )
 			: null;
 
 		Analytics.Track( type, props );
@@ -58,7 +59,7 @@ public sealed class TrackAttribute : Attribute
 	/// Map positional arg values to a property dictionary. Resolves parameter names
 	/// via TypeLibrary by method identity; falls back to arg0/arg1... Skips null args.
 	/// </summary>
-	public static Dictionary<string, object>? CaptureArgs( int methodIdentity, Type declaringType, object[] args )
+	public static Dictionary<string, object>? CaptureArgs( int methodIdentity, Type? declaringType, object[] args )
 	{
 		if ( args is null || args.Length == 0 )
 			return null;
@@ -75,11 +76,14 @@ public sealed class TrackAttribute : Attribute
 		return props.Count > 0 ? props : null;
 	}
 
-	static string[] ResolveParamNames( int methodIdentity, Type declaringType, int count )
+	static string[] ResolveParamNames( int methodIdentity, Type? declaringType, int count )
 	{
 		var names = new string[count];
 		for ( var i = 0; i < count; i++ )
 			names[i] = $"arg{i}";
+
+		if ( declaringType is null )
+			return names;
 
 		try
 		{
