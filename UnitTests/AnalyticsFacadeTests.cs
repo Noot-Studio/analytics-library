@@ -39,10 +39,20 @@ public class AnalyticsFacadeTests
 	}
 
 	[TestMethod]
-	public void Init_Twice_SecondIsNoOp()
+	public async Task Init_Twice_SecondIsNoOp()
 	{
-		Analytics.InitForTests( new FakeSender(), new AnalyticsOptions { PlayerId = "a" } );
-		Analytics.InitForTests( new FakeSender(), new AnalyticsOptions { PlayerId = "b" } );
-		Assert.IsTrue( Analytics.IsInitialized ); // no crash, still one client
+		var first = new FakeSender();
+		Analytics.InitForTests( first, new AnalyticsOptions { PlayerId = "a", FlushIntervalSeconds = 999f } );
+
+		// The real Init must hit its `_client is not null` guard and do nothing —
+		// it returns before constructing an HttpEventSender, so no network.
+		Analytics.Init( "pk_second", new AnalyticsOptions { PlayerId = "b" } );
+
+		Analytics.Track( "after_second_init" );
+		await Analytics.FlushAsyncForTests();
+
+		// Event landed in the FIRST client's sender → the second Init was ignored.
+		Assert.IsTrue( Analytics.IsInitialized );
+		Assert.IsTrue( first.Sent.Exists( e => e.Type == "after_second_init" ) );
 	}
 }
