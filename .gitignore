@@ -1,0 +1,8 @@
+# s&box / .NET build output
+bin/
+obj/
+.vs/
+*.user
+
+# s&box generated
+/.sbox/

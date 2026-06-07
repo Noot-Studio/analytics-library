@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "Editor": {
+      "commandName": "Executable",
+      "executablePath": "../../../../../../../../../Program Files (x86)/Steam/steamapps/common/sbox/sbox-dev.exe",
+      "commandLineArgs": "-project \u0022d:\\users\\suiram\\documents\\sbox\\analytics_demo\\Libraries\\analytics\\analytics.sbproj\u0022"
+    }
+  }
+}
