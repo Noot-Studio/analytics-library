@@ -18,7 +18,7 @@ public sealed class EventBuffer
 	readonly Queue<AnalyticsEvent> _queue = new();
 	readonly object _lock = new();
 
-	public EventBuffer( int capacity = 10_000 ) => _capacity = capacity;
+	public EventBuffer( int capacity = 10_000 ) => _capacity = Math.Max( 1, capacity );
 
 	public int Count
 	{
@@ -69,9 +69,12 @@ public sealed class EventBuffer
 	/// <summary>Return a failed batch to the buffer (best-effort ordering).</summary>
 	public void Requeue( IEnumerable<AnalyticsEvent> events )
 	{
+		// Materialize before locking so a lazy/deferred enumerable can't run caller
+		// code (or re-enter this lock) while the buffer is held.
+		var items = events as ICollection<AnalyticsEvent> ?? new List<AnalyticsEvent>( events );
 		lock ( _lock )
 		{
-			foreach ( var ev in events )
+			foreach ( var ev in items )
 			{
 				_queue.Enqueue( ev );
 				while ( _queue.Count > _capacity )
