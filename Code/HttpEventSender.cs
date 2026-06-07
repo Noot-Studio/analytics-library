@@ -23,7 +23,7 @@ public sealed class HttpEventSender : IEventSender
 
 		try
 		{
-			var response = await Http.RequestAsync( $"{ingestUrl}/v1/events", "POST", content, headers );
+			var response = await Http.RequestAsync( $"{ingestUrl.TrimEnd( '/' )}/v1/events", "POST", content, headers );
 			return response.StatusCode == HttpStatusCode.Accepted;
 		}
 		catch ( Exception e )
