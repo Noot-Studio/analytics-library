@@ -56,5 +56,7 @@ public class AnalyticsEventTests
 		Assert.IsTrue( p.ContainsKey( "properties" ) );
 		var pos = (Dictionary<string, object>)p["position"];
 		Assert.AreEqual( 1f, pos["x"] );
+		Assert.AreEqual( 2f, pos["y"] );
+		Assert.AreEqual( 3f, pos["z"] );
 	}
 }
