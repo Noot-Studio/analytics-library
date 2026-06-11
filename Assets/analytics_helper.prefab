@@ -1,0 +1,47 @@
+{
+  "RootObject": {
+    "__guid": "f4a1c2d3-0001-4a10-9b20-aa0011223344",
+    "__version": 2,
+    "Flags": 0,
+    "Name": "Analytics",
+    "Position": "0,0,0",
+    "Rotation": "0,0,0,1",
+    "Scale": "1,1,1",
+    "Tags": "",
+    "Enabled": true,
+    "NetworkMode": 2,
+    "NetworkFlags": 0,
+    "NetworkOrphaned": 0,
+    "NetworkTransmit": true,
+    "OwnerTransfer": 1,
+    "Components": [
+      {
+        "__type": "Noot.Analytics.AnalyticsComponent",
+        "__guid": "f4a1c2d3-0002-4a10-9b20-aa0011223344",
+        "__enabled": true,
+        "Flags": 0,
+        "ApiKey": "",
+        "IngestUrl": "https://ingest.sbox-analytics.com",
+        "TrackSessions": true,
+        "TrackSceneLoads": true,
+        "TrackConnections": true,
+        "FlushIntervalSeconds": 10,
+        "MaxBatchSize": 50,
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
+      }
+    ],
+    "Children": []
+  },
+  "ResourceVersion": 2,
+  "ShowInMenu": true,
+  "MenuPath": "Analytics Helper",
+  "MenuIcon": "analytics",
+  "DontBreakAsTemplate": false,
+  "__references": [],
+  "__version": 2
+}

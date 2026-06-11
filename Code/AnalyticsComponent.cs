@@ -8,7 +8,7 @@ namespace Noot.Analytics;
 /// (scene_loaded, player_connected, player_disconnected). Session start/end are
 /// owned by the core. Connect/disconnect fire on the host only.
 /// </summary>
-[Title( "Analytics" )]
+[Title( "Analytics Helper" )]
 [Category( "Analytics" )]
 [Icon( "analytics" )]
 public sealed class AnalyticsComponent : Component, Component.INetworkListener
