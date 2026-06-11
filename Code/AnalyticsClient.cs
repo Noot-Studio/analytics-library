@@ -54,11 +54,28 @@ public sealed class AnalyticsClient
 		if ( !Enabled )
 			return;
 
+		var resolvedPlayerId = playerId ?? PlayerId;
+
+		// Explicit args always win; the option providers only fill gaps. They run
+		// user code, so a throwing provider degrades to "no scene/position" rather
+		// than dropping the event.
+		if ( scene is null && _options.SceneProvider is not null )
+		{
+			try { scene = _options.SceneProvider(); }
+			catch ( Exception e ) { Log.Warning( $"[Analytics] SceneProvider threw: {e.Message}" ); }
+		}
+
+		if ( position is null && _options.PositionResolver is not null )
+		{
+			try { position = _options.PositionResolver( resolvedPlayerId ); }
+			catch ( Exception e ) { Log.Warning( $"[Analytics] PositionResolver threw: {e.Message}" ); }
+		}
+
 		var ev = new AnalyticsEvent
 		{
 			Type = type,
 			SessionId = SessionId,
-			PlayerId = playerId ?? PlayerId,
+			PlayerId = resolvedPlayerId,
 			Properties = properties,
 			Scene = scene ?? "",
 			Position = position,
