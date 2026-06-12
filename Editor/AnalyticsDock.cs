@@ -75,9 +75,10 @@ sealed class SecretLineEdit : LineEdit
 
 /// <summary>
 /// Dockable "Analytics" editor window, styled like the inspector: each concern
-/// (connection, each metric visualization) is an <see cref="ExpandGroup"/>
-/// holding a <see cref="ControlSheet"/> bound to a settings object. First
-/// visualization: the spatial heatmap (volumetric fog or voxel cubes).
+/// (connection, each visualizer) is an <see cref="ExpandGroup"/> holding a
+/// <see cref="ControlSheet"/> bound to a settings object. Each visualizer
+/// section is self-contained — its own query settings, fetched dataset, and
+/// status — and the two share one scene overlay, so showing one hides the other.
 /// Editor-only: the key is stored in a per-project cookie in user-local editor
 /// data, never in scene files or builds.
 /// </summary>
@@ -114,34 +115,49 @@ public sealed class AnalyticsDock : Widget
 		[Title( "Metric Aggregation" )] public MetricAggregation MetricAgg { get; set; } = MetricAggregation.Avg;
 	}
 
-	sealed class HeatmapRenderSettings
+	sealed class FogRenderSettings
 	{
-		[Title( "Show Heatmap" )] public bool Visible { get; set; }
-		public HeatmapRenderMode Mode { get; set; } = HeatmapRenderMode.Fog;
+		[Title( "Show Fog" )] public bool Visible { get; set; }
 		[Range( 0.1f, 20f )] public float Density { get; set; } = 3.5f;
 		[Range( 0.25f, 5f )] public float Falloff { get; set; } = 1.8f;
 		[Range( 16f, 256f )] public float Steps { get; set; } = 96f;
 	}
 
-	readonly ConnectionSettings _connection = new();
-	readonly HeatmapQuerySettings _query = new();
-	readonly HeatmapRenderSettings _render = new();
+	sealed class CubesRenderSettings
+	{
+		[Title( "Show Cubes" )] public bool Visible { get; set; }
+	}
 
-	readonly ComboBox _scene;
+	/// <summary>
+	/// One visualizer's UI handles and last-fetched dataset. Each section owns
+	/// its query settings so the two visualizers can target different data.
+	/// </summary>
+	sealed class VisualizerSection
+	{
+		public readonly HeatmapQuerySettings Query = new();
+		public ComboBox Scene;
+		public Label Status;
+		public ExpandGroup Group;
+		public SerializedObject RenderSo;
+
+		// Look-only changes rebuild from this without another network round-trip.
+		public List<HeatmapVoxel> Voxels;
+		public DensityGrid Grid;
+		public float FetchedVoxelSize;
+		public bool FetchedUseMetric;
+		public bool Fetching;
+	}
+
+	readonly ConnectionSettings _connection = new();
+	readonly FogRenderSettings _fog = new();
+	readonly CubesRenderSettings _cubes = new();
+	readonly VisualizerSection _fogSection = new();
+	readonly VisualizerSection _cubesSection = new();
+
 	Label _connectionStatus;
-	Label _heatmapStatus;
 	ExpandGroup _connectionGroup;
-	ExpandGroup _heatmapGroup;
 
 	readonly HeatmapOverlay _overlay = new();
-
-	// Last fetched dataset: look-only changes (sliders, render mode) rebuild
-	// from this without another network round-trip.
-	List<HeatmapVoxel> _voxels;
-	DensityGrid _grid;
-	float _fetchedVoxelSize;
-	bool _fetchedUseMetric;
-	bool _fetching;
 
 	public AnalyticsDock( Widget parent ) : base( parent )
 	{
@@ -166,9 +182,11 @@ public sealed class AnalyticsDock : Widget
 
 		canvas.Add( BuildConnectionGroup() );
 
-		// --- Heatmap visualization -------------------------------------------
-		_scene = new ComboBox( this );
-		canvas.Add( BuildHeatmapGroup() );
+		// --- Visualizers ------------------------------------------------------
+		canvas.Add( BuildVisualizerGroup( _fogSection, _fog, OnFogSettingChanged,
+			"Fog Heatmap", "cloud_queue", "fog" ) );
+		canvas.Add( BuildVisualizerGroup( _cubesSection, _cubes, OnCubesSettingChanged,
+			"Voxel Heatmap", "view_in_ar", "cubes" ) );
 		canvas.AddStretchCell();
 	}
 
@@ -205,7 +223,7 @@ public sealed class AnalyticsDock : Widget
 
 	void SetConnectionStatus( string text ) => SetStatus( _connectionStatus, _connectionGroup, text );
 
-	void SetHeatmapStatus( string text ) => SetStatus( _heatmapStatus, _heatmapGroup, text );
+	static void SetSectionStatus( VisualizerSection section, string text ) => SetStatus( section.Status, section.Group, text );
 
 	ExpandGroup MakeGroup( string title, string icon, string cookie, Widget content )
 	{
@@ -251,7 +269,8 @@ public sealed class AnalyticsDock : Widget
 		return _connectionGroup;
 	}
 
-	Widget BuildHeatmapGroup()
+	Widget BuildVisualizerGroup( VisualizerSection section, object renderSettings,
+		SerializedObject.PropertyChangedDelegate onRenderChanged, string title, string icon, string cookie )
 	{
 		var content = new Widget( this );
 		content.Layout = Layout.Column();
@@ -260,57 +279,84 @@ public sealed class AnalyticsDock : Widget
 
 		var sheet = new ControlSheet();
 
-		var renderSo = EditorUtility.GetSerializedObject( _render );
-		renderSo.OnPropertyChanged += OnRenderSettingChanged;
-		sheet.AddObject( renderSo );
+		section.RenderSo = EditorUtility.GetSerializedObject( renderSettings );
+		section.RenderSo.OnPropertyChanged += onRenderChanged;
+		sheet.AddObject( section.RenderSo );
 
 		// Scene comes from the API, not free text — a combo fed by Load Scenes.
 		// Label width matches the sheet's label column (min 120, spacing 10) so
 		// the combo lines up with the other controls.
+		section.Scene = new ComboBox( this );
 		var sceneRow = Layout.Row();
 		sceneRow.Spacing = 10f;
 		var sceneLabel = new Label( "Scene", this );
 		sceneLabel.FixedWidth = 120f;
 		sceneRow.Add( sceneLabel );
-		sceneRow.Add( _scene, 1 );
+		sceneRow.Add( section.Scene, 1 );
 		var loadScenes = new Button( "", "refresh", this );
 		loadScenes.ToolTip = "Load scenes with spatial data";
-		loadScenes.Clicked = () => _ = LoadScenesAsync();
+		loadScenes.Clicked = () => _ = LoadScenesAsync( section );
 		sceneRow.Add( loadScenes );
 		sheet.AddLayout( sceneRow );
 
-		var querySo = EditorUtility.GetSerializedObject( _query );
-		sheet.AddObject( querySo );
+		sheet.AddObject( EditorUtility.GetSerializedObject( section.Query ) );
 
 		content.Layout.Add( sheet );
 
 		var refresh = new Button( "Refresh", "refresh", this );
-		refresh.Clicked = () => _ = RefreshAsync();
+		refresh.Clicked = () => _ = RefreshAsync( section );
 		content.Layout.Add( refresh );
 
-		_heatmapStatus = MakeStatusLabel( content );
+		section.Status = MakeStatusLabel( content );
 
-		_heatmapGroup = MakeGroup( "Heatmap", "local_fire_department", "heatmap", content );
-		return _heatmapGroup;
+		section.Group = MakeGroup( title, icon, cookie, content );
+		return section.Group;
 	}
 
-	void OnRenderSettingChanged( SerializedProperty prop )
+	void OnFogSettingChanged( SerializedProperty prop )
 	{
-		switch ( prop.Name )
+		if ( prop.Name == nameof( FogRenderSettings.Visible ) )
 		{
-			case nameof( HeatmapRenderSettings.Visible ):
-			case nameof( HeatmapRenderSettings.Mode ):
-				if ( _render.Visible && _grid != null )
-					RebuildOverlay();
-				else
-					_overlay.Hide();
-				break;
-			default:
-				// Fog look params live in material attributes — update in place,
-				// no re-fetch. (Steps/density/falloff don't affect the cubes mesh.)
-				_overlay.UpdateLook( _render.Density, _render.Falloff, _render.Steps );
-				break;
+			// The overlay holds one scene object — the two modes are exclusive.
+			if ( _fog.Visible )
+				SetVisibleToggle( _cubesSection.RenderSo, false );
+			RebuildOrHide();
+			return;
 		}
+
+		// Fog look params live in material attributes — update in place, no re-fetch.
+		_overlay.UpdateLook( _fog.Density, _fog.Falloff, _fog.Steps );
+	}
+
+	void OnCubesSettingChanged( SerializedProperty prop )
+	{
+		if ( prop.Name != nameof( CubesRenderSettings.Visible ) )
+			return;
+
+		if ( _cubes.Visible )
+			SetVisibleToggle( _fogSection.RenderSo, false );
+		RebuildOrHide();
+	}
+
+	static void SetVisibleToggle( SerializedObject so, bool value )
+	{
+		// Through the SerializedObject so the checkbox widget updates too. Guard:
+		// only flip when needed, else the change events ping-pong.
+		var prop = so?.GetProperty( "Visible" );
+		if ( prop != null && prop.GetValue( false ) != value )
+			prop.SetValue( value );
+	}
+
+	VisualizerSection ActiveSection =>
+		_fog.Visible ? _fogSection :
+		_cubes.Visible ? _cubesSection : null;
+
+	void RebuildOrHide()
+	{
+		if ( ActiveSection?.Grid != null )
+			RebuildOverlay();
+		else
+			_overlay.Hide();
 	}
 
 	SpatialApiClient CreateClient() => new( _connection.IngestUrl, _connection.ApiKey );
@@ -336,90 +382,94 @@ public sealed class AnalyticsDock : Widget
 		}
 	}
 
-	async System.Threading.Tasks.Task LoadScenesAsync()
+	async System.Threading.Tasks.Task LoadScenesAsync( VisualizerSection section )
 	{
 		try
 		{
-			SetHeatmapStatus( "Loading scenes…" );
-			var response = await CreateClient().GetScenesAsync( _query.From.Trim(), _query.To.Trim() );
-			var selected = _scene.CurrentText;
-			_scene.Clear();
+			SetSectionStatus( section, "Loading scenes…" );
+			var response = await CreateClient().GetScenesAsync( section.Query.From.Trim(), section.Query.To.Trim() );
+			var selected = section.Scene.CurrentText;
+			section.Scene.Clear();
 			foreach ( var scene in response.Scenes )
-				_scene.AddItem( scene.Scene );
+				section.Scene.AddItem( scene.Scene );
 			if ( !string.IsNullOrEmpty( selected ) && response.Scenes.Any( s => s.Scene == selected ) )
-				_scene.TrySelectNamed( selected );
-			SetHeatmapStatus( response.Scenes.Count == 0 ? "No scenes with spatial data in this range." : $"{response.Scenes.Count} scene(s)." );
+				section.Scene.TrySelectNamed( selected );
+			SetSectionStatus( section, response.Scenes.Count == 0 ? "No scenes with spatial data in this range." : $"{response.Scenes.Count} scene(s)." );
 		}
 		catch ( SpatialApiException e )
 		{
-			SetHeatmapStatus( e.StatusCode == 401 ? "Invalid API key." : $"Scene fetch failed: {e.Message}" );
+			SetSectionStatus( section, e.StatusCode == 401 ? "Invalid API key." : $"Scene fetch failed: {e.Message}" );
 		}
 	}
 
-	async System.Threading.Tasks.Task RefreshAsync()
+	async System.Threading.Tasks.Task RefreshAsync( VisualizerSection section )
 	{
-		if ( _fetching )
+		if ( section.Fetching )
 			return;
 
-		var scene = _scene.CurrentText;
+		var scene = section.Scene.CurrentText;
 		if ( string.IsNullOrWhiteSpace( scene ) )
 		{
-			SetHeatmapStatus( "Pick a scene first (Load Scenes)." );
+			SetSectionStatus( section, "Pick a scene first (Load Scenes)." );
 			return;
 		}
-		if ( _query.VoxelSize <= 0f )
+		if ( section.Query.VoxelSize <= 0f )
 		{
-			SetHeatmapStatus( "Voxel size must be a positive number." );
+			SetSectionStatus( section, "Voxel size must be a positive number." );
 			return;
 		}
 
-		var metricKey = _query.MetricKey.Trim();
+		var metricKey = section.Query.MetricKey.Trim();
 		var useMetric = !string.IsNullOrEmpty( metricKey );
 
 		try
 		{
-			_fetching = true;
-			SetHeatmapStatus( "Fetching voxels…" );
+			section.Fetching = true;
+			SetSectionStatus( section, "Fetching voxels…" );
 			var response = await CreateClient().GetVoxelsAsync( new SpatialApiClient.VoxelsQuery
 			{
 				Scene = scene,
-				VoxelSize = _query.VoxelSize,
-				From = _query.From.Trim(),
-				To = _query.To.Trim(),
-				EventType = _query.EventType.Trim(),
+				VoxelSize = section.Query.VoxelSize,
+				From = section.Query.From.Trim(),
+				To = section.Query.To.Trim(),
+				EventType = section.Query.EventType.Trim(),
 				MetricKey = useMetric ? metricKey : null,
-				MetricAgg = _query.MetricAgg.ToString().ToLowerInvariant(),
+				MetricAgg = section.Query.MetricAgg.ToString().ToLowerInvariant(),
 			} );
 
-			_voxels = response.Voxels
+			section.Voxels = response.Voxels
 				.Select( v => new HeatmapVoxel( v.X, v.Y, v.Z, v.Count, v.Value ) )
 				.ToList();
-			_fetchedVoxelSize = response.VoxelSize;
-			_fetchedUseMetric = useMetric;
-			_grid = DensityGridBuilder.Build( _voxels, _fetchedVoxelSize, useMetric );
+			section.FetchedVoxelSize = response.VoxelSize;
+			section.FetchedUseMetric = useMetric;
+			section.Grid = DensityGridBuilder.Build( section.Voxels, section.FetchedVoxelSize, useMetric );
 
-			if ( _voxels.Count == 0 )
+			if ( section.Voxels.Count == 0 )
 			{
-				_overlay.Hide();
-				SetHeatmapStatus( "No data for this query." );
+				if ( ActiveSection == section )
+					_overlay.Hide();
+				SetSectionStatus( section, "No data for this query." );
 				return;
 			}
-			if ( _grid == null )
+			if ( section.Grid == null )
 			{
-				_overlay.Hide();
-				SetHeatmapStatus( $"Grid exceeds {DensityGridBuilder.MaxGridCells:N0} cells — try a larger voxel size." );
+				if ( ActiveSection == section )
+					_overlay.Hide();
+				SetSectionStatus( section, $"Grid exceeds {DensityGridBuilder.MaxGridCells:N0} cells — try a larger voxel size." );
 				return;
 			}
 
-			_render.Visible = true;
+			// Refreshing a section makes it the shown one; the toggle change
+			// handler turns the other section off and rebuilds the overlay.
+			SetVisibleToggle( section.RenderSo, true );
 			RebuildOverlay();
-			SetHeatmapStatus( response.Truncated
-				? $"{_voxels.Count} voxels (result limit hit — data truncated)."
-				: $"{_voxels.Count} voxels." );
+			SetSectionStatus( section, response.Truncated
+				? $"{section.Voxels.Count} voxels (result limit hit — data truncated)."
+				: $"{section.Voxels.Count} voxels." );
 		}
 		catch ( SpatialApiException e )
 		{
-			SetHeatmapStatus( e.StatusCode switch
+			SetSectionStatus( section, e.StatusCode switch
 			{
 				401 => "Invalid API key.",
 				400 => "Invalid query parameters.",
@@ -429,24 +479,26 @@ public sealed class AnalyticsDock : Widget
 		}
 		finally
 		{
-			_fetching = false;
+			section.Fetching = false;
 		}
 	}
 
 	void RebuildOverlay()
 	{
-		if ( !_render.Visible || _grid == null )
+		var section = ActiveSection;
+		if ( section?.Grid == null )
 			return;
 
 		var world = SceneEditorSession.Active?.Scene?.SceneWorld;
 		if ( world == null )
 		{
-			SetHeatmapStatus( "No active editor scene." );
+			SetSectionStatus( section, "No active editor scene." );
 			return;
 		}
 
-		_overlay.Show( world, _render.Mode, _grid, _voxels, _fetchedVoxelSize, _fetchedUseMetric,
-			_render.Density, _render.Falloff, _render.Steps );
+		var mode = section == _fogSection ? HeatmapRenderMode.Fog : HeatmapRenderMode.Cubes;
+		_overlay.Show( world, mode, section.Grid, section.Voxels, section.FetchedVoxelSize, section.FetchedUseMetric,
+			_fog.Density, _fog.Falloff, _fog.Steps );
 	}
 
 	public override void OnDestroyed()

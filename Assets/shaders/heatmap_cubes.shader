@@ -24,6 +24,7 @@ COMMON
 struct VertexInput
 {
 	#include "common/vertexinput.hlsl"
+	float4 vColor : COLOR0 < Semantic( Color ); >;
 };
 
 struct PixelInput
@@ -38,6 +39,9 @@ VS
 	PixelInput MainVs( VertexInput v )
 	{
 		PixelInput i = ProcessVertex( v );
+		// ProcessVertex does not carry COLOR0 through; copy it ourselves or
+		// the pixel shader reads an uninitialized (gray) vertex color.
+		i.vVertexColor = v.vColor;
 		return FinalizeVertex( i );
 	}
 }

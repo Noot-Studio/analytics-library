@@ -19,6 +19,7 @@ public enum HeatmapRenderMode
 public sealed class HeatmapOverlay : IDisposable
 {
 	const float NormalizePercentile = 0.95f;
+	const float MinCubeScale = 0.25f;
 
 	SceneObject _sceneObject;
 	Texture _volumeTexture;
@@ -110,7 +111,6 @@ public sealed class HeatmapOverlay : IDisposable
 		if ( scale <= 0f )
 			return;
 
-		var half = voxelSize / 2f;
 		var verts = new List<Vertex>( voxels.Count * 8 );
 		var indices = new List<int>( voxels.Count * 36 );
 		var bounds = BBox.FromPositionAndSize( new Vector3( voxels[0].X, voxels[0].Y, voxels[0].Z ), voxelSize );
@@ -120,6 +120,10 @@ public sealed class HeatmapOverlay : IDisposable
 			var intensity = useMetric ? (v.Value ?? 0f) : v.Count;
 			var t = Math.Clamp( intensity / scale, 0f, 1f );
 			var color = InfernoColor( t ).WithAlpha( Math.Clamp( t, 0.04f, 0.85f ) );
+
+			// Scale each cube with intensity so the heatmap reads as a density
+			// cloud rather than a wall of uniform blocks.
+			var half = voxelSize * (MinCubeScale + (1f - MinCubeScale) * t) / 2f;
 
 			var center = new Vector3( v.X, v.Y, v.Z );
 			bounds = bounds.AddBBox( BBox.FromPositionAndSize( center, voxelSize ) );
