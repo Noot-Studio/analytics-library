@@ -16,7 +16,7 @@ public static class Analytics
 	public static bool IsInitialized => _client is not null;
 
 	/// <summary>Configure and start the SDK. Idempotent: a second call is ignored.</summary>
-	public static void Init( string apiKey, AnalyticsOptions? options = null )
+	public static void Init( string publishableKey, AnalyticsOptions? options = null )
 	{
 		if ( _client is not null )
 		{
@@ -24,7 +24,7 @@ public static class Analytics
 			return;
 		}
 
-		_client = new AnalyticsClient( apiKey, options ?? new AnalyticsOptions(), new HttpEventSender() );
+		_client = new AnalyticsClient( publishableKey, options ?? new AnalyticsOptions(), new HttpEventSender() );
 		_client.Start();
 	}
 

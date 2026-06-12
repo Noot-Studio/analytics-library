@@ -10,7 +10,7 @@ public class AnalyticsClientTests
 		public List<AnalyticsEvent> Sent { get; } = new();
 		public bool NextResult { get; set; } = true;
 
-		public Task<bool> SendAsync( List<AnalyticsEvent> batch, string apiKey, string ingestUrl )
+		public Task<bool> SendAsync( List<AnalyticsEvent> batch, string publishableKey, string ingestUrl )
 		{
 			if ( NextResult )
 				Sent.AddRange( batch );
@@ -73,7 +73,7 @@ public class AnalyticsClientTests
 	}
 
 	[TestMethod]
-	public void Disabled_WhenApiKeyEmpty()
+	public void Disabled_WhenPublishableKeyEmpty()
 	{
 		var client = new AnalyticsClient( "", Opts(), new FakeSender() );
 		client.Start();

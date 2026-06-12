@@ -102,7 +102,7 @@ public sealed class AnalyticsDock : Widget
 	sealed class ConnectionSettings
 	{
 		[Title( "Ingest URL" )] public string IngestUrl { get; set; } = DefaultIngestUrl;
-		[Title( "Secret API Key" )] public string ApiKey { get; set; } = "";
+		[Title( "Secret Key" )] public string SecretKey { get; set; } = "";
 	}
 
 	sealed class HeatmapQuerySettings
@@ -177,8 +177,9 @@ public sealed class AnalyticsDock : Widget
 		// --- Connection -----------------------------------------------------
 		_connection.IngestUrl = ProjectCookie.Get( $"{CookiePrefix}.ingesturl",
 			ProjectCookie.Get( $"{LegacyCookiePrefix}.ingesturl", DefaultIngestUrl ) );
-		_connection.ApiKey = ProjectCookie.Get( $"{CookiePrefix}.apikey",
-			ProjectCookie.Get( $"{LegacyCookiePrefix}.apikey", "" ) );
+		_connection.SecretKey = ProjectCookie.Get( $"{CookiePrefix}.secretkey",
+			ProjectCookie.Get( $"{CookiePrefix}.apikey",
+				ProjectCookie.Get( $"{LegacyCookiePrefix}.apikey", "" ) ) );
 
 		canvas.Add( BuildConnectionGroup() );
 
@@ -250,12 +251,12 @@ public sealed class AnalyticsDock : Widget
 		so.OnPropertyChanged += _ =>
 		{
 			ProjectCookie.Set( $"{CookiePrefix}.ingesturl", _connection.IngestUrl );
-			ProjectCookie.Set( $"{CookiePrefix}.apikey", _connection.ApiKey );
+			ProjectCookie.Set( $"{CookiePrefix}.secretkey", _connection.SecretKey );
 		};
 		// The key needs the masked control — the default string control echoes
 		// plain text — so it's added as its own row, not via AddObject.
-		sheet.AddObject( so, p => p.Name != nameof( ConnectionSettings.ApiKey ) );
-		sheet.AddControl<SecretStringControlWidget>( so.GetProperty( nameof( ConnectionSettings.ApiKey ) ) );
+		sheet.AddObject( so, p => p.Name != nameof( ConnectionSettings.SecretKey ) );
+		sheet.AddControl<SecretStringControlWidget>( so.GetProperty( nameof( ConnectionSettings.SecretKey ) ) );
 
 		content.Layout.Add( sheet );
 
@@ -359,7 +360,7 @@ public sealed class AnalyticsDock : Widget
 			_overlay.Hide();
 	}
 
-	SpatialApiClient CreateClient() => new( _connection.IngestUrl, _connection.ApiKey );
+	SpatialApiClient CreateClient() => new( _connection.IngestUrl, _connection.SecretKey );
 
 	async System.Threading.Tasks.Task TestConnectionAsync()
 	{
@@ -375,7 +376,7 @@ public sealed class AnalyticsDock : Widget
 		{
 			SetConnectionStatus( e.StatusCode switch
 			{
-				401 => "Invalid API key.",
+				401 => "Invalid secret key.",
 				0 => $"Network error: {e.Message}. Check the ingest URL and retry.",
 				_ => $"Connection failed: {e.Message}",
 			} );
@@ -398,7 +399,7 @@ public sealed class AnalyticsDock : Widget
 		}
 		catch ( SpatialApiException e )
 		{
-			SetSectionStatus( section, e.StatusCode == 401 ? "Invalid API key." : $"Scene fetch failed: {e.Message}" );
+			SetSectionStatus( section, e.StatusCode == 401 ? "Invalid secret key." : $"Scene fetch failed: {e.Message}" );
 		}
 	}
 
@@ -471,7 +472,7 @@ public sealed class AnalyticsDock : Widget
 		{
 			SetSectionStatus( section, e.StatusCode switch
 			{
-				401 => "Invalid API key.",
+				401 => "Invalid secret key.",
 				400 => "Invalid query parameters.",
 				0 => $"Network error: {e.Message}. Check the ingest URL and retry.",
 				_ => $"Request failed: {e.Message}",

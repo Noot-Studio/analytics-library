@@ -7,5 +7,5 @@ namespace Noot.Analytics;
 public interface IEventSender
 {
 	/// <summary>Returns true if the batch was accepted (HTTP 202).</summary>
-	Task<bool> SendAsync( List<AnalyticsEvent> batch, string apiKey, string ingestUrl );
+	Task<bool> SendAsync( List<AnalyticsEvent> batch, string publishableKey, string ingestUrl );
 }

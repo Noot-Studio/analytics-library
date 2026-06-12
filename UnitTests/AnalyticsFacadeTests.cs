@@ -8,7 +8,7 @@ public class AnalyticsFacadeTests
 	sealed class FakeSender : IEventSender
 	{
 		public List<AnalyticsEvent> Sent { get; } = new();
-		public Task<bool> SendAsync( List<AnalyticsEvent> batch, string apiKey, string ingestUrl )
+		public Task<bool> SendAsync( List<AnalyticsEvent> batch, string publishableKey, string ingestUrl )
 		{
 			Sent.AddRange( batch );
 			return Task.FromResult( true );

@@ -11,7 +11,7 @@ namespace Noot.Analytics;
 /// <summary>Real transport: POST {ingestUrl}/v1/events with the x-api-key header.</summary>
 public sealed class HttpEventSender : IEventSender
 {
-	public async Task<bool> SendAsync( List<AnalyticsEvent> batch, string apiKey, string ingestUrl )
+	public async Task<bool> SendAsync( List<AnalyticsEvent> batch, string publishableKey, string ingestUrl )
 	{
 		var events = new List<Dictionary<string, object>>( batch.Count );
 		foreach ( var ev in batch )
@@ -19,7 +19,7 @@ public sealed class HttpEventSender : IEventSender
 
 		var json = Json.Serialize( new Dictionary<string, object> { ["events"] = events } );
 		var content = new StringContent( json, Encoding.UTF8, "application/json" );
-		var headers = new Dictionary<string, string> { ["x-api-key"] = apiKey };
+		var headers = new Dictionary<string, string> { ["x-api-key"] = publishableKey };
 
 		try
 		{

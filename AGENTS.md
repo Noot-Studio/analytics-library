@@ -18,8 +18,8 @@ It is a **standalone git repository**. In the analytics monorepo it is mounted a
 
 Three ways to send events, all funneling into the same core:
 
-- **`Analytics.Init(apiKey, options)` / `Track(type, props?, scene?, position?, playerId?)` / `Flush()` / `Shutdown()`** — the standalone core. No component required.
-- **`AnalyticsComponent`** — optional drop-in. Set `ApiKey` in the inspector; it auto-`Init`s the core and emits `scene_loaded`, `player_connected`, `player_disconnected`. Owns `Shutdown` only if it did the `Init`.
+- **`Analytics.Init(publishableKey, options)` / `Track(type, props?, scene?, position?, playerId?)` / `Flush()` / `Shutdown()`** — the standalone core. No component required.
+- **`AnalyticsComponent`** — optional drop-in. Set `PublishableKey` in the inspector; it auto-`Init`s the core and emits `scene_loaded`, `player_connected`, `player_disconnected`. Owns `Shutdown` only if it did the `Init`.
 - **`[Track("name")]`** on a method (emit on call; `Params = true` captures args) or property (emit `{ value }` on change). Codegen sugar over `Track`.
 
 Default events: `session_start`/`session_end` (core), `scene_loaded` + `player_connected`/`player_disconnected` (component; connect/disconnect are host-only).

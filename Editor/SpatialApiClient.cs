@@ -55,12 +55,12 @@ public sealed class SpatialApiException : Exception
 public sealed class SpatialApiClient
 {
 	readonly string _ingestUrl;
-	readonly string _apiKey;
+	readonly string _secretKey;
 
-	public SpatialApiClient( string ingestUrl, string apiKey )
+	public SpatialApiClient( string ingestUrl, string secretKey )
 	{
 		_ingestUrl = ingestUrl?.TrimEnd( '/' ) ?? "";
-		_apiKey = apiKey ?? "";
+		_secretKey = secretKey ?? "";
 	}
 
 	public sealed class VoxelsQuery
@@ -100,7 +100,7 @@ public sealed class SpatialApiClient
 
 	async Task<T> GetAsync<T>( string path )
 	{
-		var headers = new Dictionary<string, string> { ["x-api-key"] = _apiKey };
+		var headers = new Dictionary<string, string> { ["x-api-key"] = _secretKey };
 		HttpResponseMessage response;
 		try
 		{

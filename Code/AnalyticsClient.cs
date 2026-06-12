@@ -11,7 +11,7 @@ namespace Noot.Analytics;
 /// </summary>
 public sealed class AnalyticsClient
 {
-	readonly string _apiKey;
+	readonly string _publishableKey;
 	readonly AnalyticsOptions _options;
 	readonly IEventSender _sender;
 	readonly EventBuffer _buffer = new();
@@ -22,17 +22,17 @@ public sealed class AnalyticsClient
 	public bool Enabled { get; }
 	public int PendingCount => _buffer.Count;
 
-	public AnalyticsClient( string apiKey, AnalyticsOptions options, IEventSender sender )
+	public AnalyticsClient( string publishableKey, AnalyticsOptions options, IEventSender sender )
 	{
-		_apiKey = apiKey;
+		_publishableKey = publishableKey;
 		_options = options;
 		_sender = sender;
 		SessionId = Guid.NewGuid().ToString();
 		PlayerId = options.PlayerId ?? AnonymousId.Hash( Connection.Local?.SteamId ?? 0UL );
-		Enabled = !string.IsNullOrEmpty( apiKey );
+		Enabled = !string.IsNullOrEmpty( publishableKey );
 
 		if ( !Enabled )
-			Log.Warning( "[Analytics] no API key — SDK disabled, events will be dropped." );
+			Log.Warning( "[Analytics] no publishable key — SDK disabled, events will be dropped." );
 	}
 
 	/// <summary>Emit session_start (if enabled) and begin the flush loop.</summary>
@@ -103,7 +103,7 @@ public sealed class AnalyticsClient
 
 		try
 		{
-			var ok = await _sender.SendAsync( batch, _apiKey, _options.IngestUrl );
+			var ok = await _sender.SendAsync( batch, _publishableKey, _options.IngestUrl );
 			if ( !ok )
 				_buffer.Requeue( batch );
 		}

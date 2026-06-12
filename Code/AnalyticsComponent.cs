@@ -15,7 +15,7 @@ namespace Noot.Analytics;
 [Icon( "analytics" )]
 public sealed class AnalyticsComponent : Component, Component.INetworkListener
 {
-	[Property] public string ApiKey { get; set; } = "";
+	[Property, Title( "Publishable Key" )] public string PublishableKey { get; set; } = "";
 	[Property] public string IngestUrl { get; set; } = "https://ingest.sbox-analytics.com";
 	[Property] public bool TrackSessions { get; set; } = true;
 	[Property] public bool TrackSceneLoads { get; set; } = true;
@@ -41,7 +41,7 @@ public sealed class AnalyticsComponent : Component, Component.INetworkListener
 		if ( Analytics.IsInitialized )
 			return; // core already configured from code — just attach.
 
-		Analytics.Init( ApiKey, new AnalyticsOptions
+		Analytics.Init( PublishableKey, new AnalyticsOptions
 		{
 			IngestUrl = IngestUrl,
 			TrackSessions = TrackSessions,
