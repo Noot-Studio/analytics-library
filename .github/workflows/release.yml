@@ -29,5 +29,9 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
+          # The repo default branch is `dev`; releases are cut from `main`.
+          # Without this, release-please targets the default branch and fails
+          # to find the config/manifest there.
+          target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
