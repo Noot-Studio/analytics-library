@@ -1,0 +1,37 @@
+name: Release
+
+# Release automation via release-please. Every merge to main updates a
+# rolling "release PR" that accumulates conventional commits into a
+# CHANGELOG and version bump (version.txt). Merging that PR tags vX.Y.Z and
+# publishes a GitHub Release (source archives attached automatically).
+#
+# This is a library SDK repo: there is nothing to build or publish beyond
+# the tagged Git source, so the pipeline only handles versioning.
+#
+# workflow_dispatch allows manual runs (e.g. coordinated with a platform
+# release in Noot-Studio/analytics).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          # The repo default branch is `dev`; releases are cut from `main`.
+          # Without this, release-please targets the default branch and fails
+          # to find the config/manifest there.
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
