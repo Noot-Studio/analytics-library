@@ -28,7 +28,7 @@ Default events: `session_start`/`session_end` (core), `scene_loaded` + `player_c
 
 ## File map (`Code/`)
 
-`AnalyticsEvent` (wire model) · `AnonymousId` (id hashing) · `EventBuffer` (buffer) · `IEventSender`/`HttpEventSender` (transport) · `AnalyticsOptions` (config) · `AnalyticsClient` (core) · `Analytics` (facade) · `TrackAttribute` (`[Track]`) · `AnalyticsComponent` (session/lifecycle drop-in) · `AnalyticsMovementComponent` + `MovementSampler` (per-entity position tracking, throttled). Tests in `UnitTests/`; run with `dotnet test UnitTests/analytics.unittest.csproj`.
+`AnalyticsEvent` (wire model) · `AnonymousId` (id hashing) · `EventBuffer` (buffer) · `IEventSender`/`HttpEventSender` (transport) · `AnalyticsOptions` (config) · `AnalyticsClient` (core) · `Analytics` (facade) · `TrackAttribute` (`[Track]`) · `AnalyticsComponent` (session/lifecycle drop-in) · `AnalyticsMovementComponent` + `MovementSampler` (per-entity position tracking, throttled, one event per sample). Aggregating spatial trackers (client-accumulate, flush one batch per window): `SpatialGrid`/`CellAccumulator`/`LineSimplifier` (pure helpers) · `AnalyticsDwellComponent` + `AnalyticsHeatmapComponent` (per-cell → `spatial_cells` batch with an open `kind` string) · `AnalyticsTrajectoryComponent` (RDP-simplified path → `trajectory` batch). Tests in `UnitTests/`; run with `dotnet test UnitTests/analytics.unittest.csproj`.
 
 ## What the SDK must do
 

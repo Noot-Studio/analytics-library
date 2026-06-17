@@ -1,0 +1,111 @@
+using System.Collections.Generic;
+using Sandbox;
+
+namespace Noot.Analytics;
+
+/// <summary>
+/// Attach to an entity (typically a player pawn) to build a movement-density
+/// heatmap: each cell counts how many times the entity ENTERED it. A window flush
+/// emits ONE event carrying every visited cell — never one event per tick.
+///
+/// Density (visits), not duration — a player crossing a corridor repeatedly
+/// makes it hot even if they never linger. For time-spent use
+/// <see cref="AnalyticsDwellComponent"/>. See <see cref="EstimatedEvents"/> for
+/// the implied event rate before enabling.
+/// </summary>
+[Title( "Analytics Heatmap Tracker" )]
+[Category( "Analytics" )]
+[Icon( "blur_on" )]
+public sealed class AnalyticsHeatmapComponent : Component
+{
+	/// <summary>Edge length (units) of one heatmap cell. Bigger = coarser, fewer cells.</summary>
+	[Property] public float CellSize { get; set; } = 128f;
+
+	/// <summary>Seconds between flushes. Each flush is one event. Floored at 1s.</summary>
+	[Property, Range( 1f, 120f )] public float FlushIntervalSeconds { get; set; } = 15f;
+
+	/// <summary>Force a flush once this many distinct cells are dirty, bounding event size.</summary>
+	[Property] public int MaxCellsPerFlush { get; set; } = 256;
+
+	/// <summary>
+	/// Sample on the host only. Keeps one emitter per entity in multiplayer —
+	/// with this off, every connected client records its own duplicate stream.
+	/// </summary>
+	[Property] public bool HostOnly { get; set; } = true;
+
+	/// <summary>Read-only estimate of the event volume this configuration implies.</summary>
+	[Property, Title( "Estimated Events" )]
+	public string EstimatedEvents
+	{
+		get
+		{
+			var interval = FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
+			return $"~{60f / interval:0.#} events/min/player at {interval:0.#}s flush (plus early flushes at {MaxCellsPerFlush} cells)";
+		}
+	}
+
+	SpatialGrid? _grid;
+	readonly CellAccumulator _accumulator = new();
+	(int, int, int)? _lastCell;
+	double _nextFlushTime;
+
+	protected override void OnEnabled()
+	{
+		_grid = new SpatialGrid( CellSize );
+		_lastCell = null;
+		_nextFlushTime = Time.Now + FlushInterval();
+		Log.Warning( "[Analytics] AnalyticsHeatmapComponent enabled — spatial density tracking is high-volume; tune CellSize/FlushIntervalSeconds and prefer host-only sampling." );
+	}
+
+	protected override void OnFixedUpdate()
+	{
+		if ( !Analytics.IsInitialized || _grid is null )
+			return;
+
+		if ( HostOnly && !Networking.IsHost )
+			return;
+
+		var cell = _grid.Cell( WorldPosition );
+
+		// Count a visit only when the entity crosses into a new cell, so standing
+		// still doesn't inflate density tick after tick.
+		if ( _lastCell != cell )
+		{
+			_accumulator.AddVisit( cell );
+			_lastCell = cell;
+		}
+
+		if ( Time.Now >= _nextFlushTime || _accumulator.Count >= MaxCellsPerFlush )
+			Flush();
+	}
+
+	protected override void OnDisabled() => Flush();
+
+	float FlushInterval() => FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
+
+	void Flush()
+	{
+		_nextFlushTime = Time.Now + FlushInterval();
+
+		if ( _accumulator.Count == 0 )
+			return;
+
+		var drained = _accumulator.Drain();
+		var cells = new List<int[]>( drained.Count );
+		foreach ( var (cell, acc) in drained )
+			cells.Add( new[] { cell.Item1, cell.Item2, cell.Item3, acc.Visits } );
+
+		Analytics.Track( "spatial_cells",
+			properties: new { kind = "visits", cell_size = CellSize, cells },
+			playerId: OwnerPlayerId() );
+	}
+
+	// Attribute samples to the entity's network owner so per-player density lines
+	// up with their other events. Unowned (world/NPC) entities fall back to the
+	// session default id.
+	string? OwnerPlayerId()
+	{
+		var owner = GameObject.Network.Active ? GameObject.Network.Owner : null;
+		return owner is null ? null : AnonymousId.Hash( owner.SteamId );
+	}
+}
