@@ -108,20 +108,7 @@ public sealed class HeatmapOverlay : IDisposable
 		if ( world == null || trajectories == null || trajectories.Count == 0 )
 			return;
 
-		// A SceneLineObject has no material by default and renders the engine
-		// error texture (the red/black stripes). Use the built-in line material
-		// with a white color map so the per-point vertex colors come through.
-		var material = Material.Load( "materials/default/default_line.vmat" ).CreateCopy();
-		material.Set( "Color", Texture.White );
-
-		var lines = new SceneLineObject( world )
-		{
-			Flags = { CastShadows = false },
-			Opaque = true,
-			Lighting = false,
-		};
-		lines.Material = material;
-		lines.Attributes.SetCombo( "D_BLEND", 0 );
+		var lines = CreateLineObject( world );
 
 		for ( var i = 0; i < trajectories.Count; i++ )
 		{
@@ -137,6 +124,106 @@ public sealed class HeatmapOverlay : IDisposable
 		}
 
 		_sceneObject = lines;
+	}
+
+	/// <summary>
+	/// Draw pre-computed navmesh routes (the estimated walked path between samples)
+	/// as colored polylines with periodic chevrons marking the direction of travel.
+	/// Routes are open — the last point is never joined back to the first.
+	/// </summary>
+	public void ShowNavRoutes( SceneWorld world, IReadOnlyList<List<Vector3>> routes,
+		float lineWidth, float arrowSpacing )
+	{
+		Hide();
+
+		if ( world == null || routes == null || routes.Count == 0 )
+			return;
+
+		var lines = CreateLineObject( world );
+
+		for ( var i = 0; i < routes.Count; i++ )
+		{
+			var route = routes[i];
+			if ( route == null || route.Count < 2 )
+				continue;
+
+			var color = PathColor( i );
+			lines.StartLine();
+			foreach ( var p in route )
+				lines.AddLinePoint( p, color, lineWidth );
+			lines.EndLine();
+
+			AddArrows( lines, route, color, lineWidth, arrowSpacing );
+		}
+
+		_sceneObject = lines;
+	}
+
+	// A SceneLineObject has no material by default and renders the engine error
+	// texture (the red/black stripes). The built-in line material with a white
+	// color map lets the per-point vertex colors come through.
+	static SceneLineObject CreateLineObject( SceneWorld world )
+	{
+		var material = Material.Load( "materials/default/default_line.vmat" ).CreateCopy();
+		material.Set( "Color", Texture.White );
+
+		var lines = new SceneLineObject( world )
+		{
+			Flags = { CastShadows = false },
+			Opaque = true,
+			Lighting = false,
+		};
+		lines.Material = material;
+		lines.Attributes.SetCombo( "D_BLEND", 0 );
+		return lines;
+	}
+
+	// Drop a forward-pointing chevron every `spacing` units along the route so
+	// the direction of travel reads at a glance.
+	static void AddArrows( SceneLineObject lines, List<Vector3> route, Color color, float width, float spacing )
+	{
+		if ( spacing <= 0f )
+			return;
+
+		const float ArrowSize = 16f;
+		var walked = 0f;
+		var nextAt = spacing;
+
+		for ( var i = 0; i < route.Count - 1; i++ )
+		{
+			var a = route[i];
+			var seg = route[i + 1] - a;
+			var segLen = seg.Length;
+			if ( segLen < 0.01f )
+				continue;
+
+			var dir = seg / segLen;
+			while ( nextAt <= walked + segLen )
+			{
+				AddChevron( lines, a + dir * (nextAt - walked), dir, ArrowSize, color, width );
+				nextAt += spacing;
+			}
+			walked += segLen;
+		}
+	}
+
+	// A "^" pointing along `dir`: back-left → tip → back-right.
+	static void AddChevron( SceneLineObject lines, Vector3 pos, Vector3 dir, float size, Color color, float width )
+	{
+		var right = Vector3.Cross( dir, Vector3.Up );
+		if ( right.LengthSquared < 0.0001f )
+			right = Vector3.Forward;
+		right = right.Normal;
+
+		var tip = pos + dir * size;
+		var backLeft = pos - dir * size + right * size;
+		var backRight = pos - dir * size - right * size;
+
+		lines.StartLine();
+		lines.AddLinePoint( backLeft, color, width );
+		lines.AddLinePoint( tip, color, width );
+		lines.AddLinePoint( backRight, color, width );
+		lines.EndLine();
 	}
 
 	// Distinct categorical color per path. The golden-ratio hue step keeps

@@ -127,6 +127,13 @@ public sealed class AnalyticsDock : Widget
 		[Title( "Line Width" ), Range( 0.5f, 16f )] public float LineWidth { get; set; } = 3f;
 	}
 
+	sealed class NavRoutesRenderSettings
+	{
+		[Title( "Show Nav Routes" )] public bool Visible { get; set; }
+		[Title( "Line Width" ), Range( 0.5f, 16f )] public float LineWidth { get; set; } = 3f;
+		[Title( "Arrow Spacing" ), Range( 32f, 512f )] public float ArrowSpacing { get; set; } = 128f;
+	}
+
 	/// <summary>
 	/// Shared UI handles every visualizer section owns: its scene picker, status
 	/// label, group, render-settings object, query window, and in-flight guard.
@@ -152,19 +159,25 @@ public sealed class AnalyticsDock : Widget
 		public float FetchedVoxelSize;
 	}
 
-	/// <summary>Path Lines section: holds the fetched per-player trajectories.</summary>
+	/// <summary>
+	/// Trajectory-fed section. Holds the raw fetched paths (Path Lines) and, for
+	/// the Nav Routes section, the navmesh-estimated routes derived from them.
+	/// </summary>
 	sealed class TrajectorySection : SectionBase
 	{
 		public List<TrajectoryDto> Trajectories;
+		public List<List<Vector3>> Routes;
 	}
 
 	readonly ConnectionSettings _connection = new();
 	readonly FogRenderSettings _fog = new();
 	readonly CubesRenderSettings _cubes = new();
 	readonly LinesRenderSettings _lines = new();
+	readonly NavRoutesRenderSettings _navRoutes = new();
 	readonly VisualizerSection _fogSection = new();
 	readonly VisualizerSection _cubesSection = new();
 	readonly TrajectorySection _linesSection = new();
+	readonly TrajectorySection _navSection = new();
 
 	Label _connectionStatus;
 	ExpandGroup _connectionGroup;
@@ -201,7 +214,9 @@ public sealed class AnalyticsDock : Widget
 		canvas.Add( BuildVisualizerGroup( _cubesSection, _cubes, OnCubesSettingChanged,
 			"Voxel Heatmap", "view_in_ar", "cubes" ) );
 		canvas.Add( BuildTrajectoryGroup( _linesSection, _lines, OnLinesSettingChanged,
-			"Path Lines", "timeline", "lines" ) );
+			() => _ = RefreshTrajectoriesAsync( _linesSection ), "Path Lines", "timeline", "lines" ) );
+		canvas.Add( BuildTrajectoryGroup( _navSection, _navRoutes, OnNavRoutesSettingChanged,
+			() => _ = RefreshNavRoutesAsync( _navSection ), "Nav Routes", "alt_route", "navroutes" ) );
 		canvas.AddStretchCell();
 	}
 
@@ -338,7 +353,8 @@ public sealed class AnalyticsDock : Widget
 	}
 
 	Widget BuildTrajectoryGroup( TrajectorySection section, object renderSettings,
-		SerializedObject.PropertyChangedDelegate onRenderChanged, string title, string icon, string cookie )
+		SerializedObject.PropertyChangedDelegate onRenderChanged, System.Action onRefresh,
+		string title, string icon, string cookie )
 	{
 		var content = new Widget( this );
 		content.Layout = Layout.Column();
@@ -359,7 +375,7 @@ public sealed class AnalyticsDock : Widget
 		content.Layout.Add( sheet );
 
 		var refresh = new Button( "Refresh", "refresh", this );
-		refresh.Clicked = () => _ = RefreshTrajectoriesAsync( section );
+		refresh.Clicked = onRefresh;
 		content.Layout.Add( refresh );
 
 		section.Status = MakeStatusLabel( content );
@@ -409,16 +425,38 @@ public sealed class AnalyticsDock : Widget
 			RebuildOverlay();
 	}
 
-	// Keep the three visualizers mutually exclusive: enabling one disables the
-	// others so only a single object ever lives in the shared overlay.
+	void OnNavRoutesSettingChanged( SerializedProperty prop )
+	{
+		if ( prop.Name == nameof( NavRoutesRenderSettings.Visible ) )
+		{
+			if ( _navRoutes.Visible )
+				DisableOthers( _navSection.RenderSo );
+			RebuildOverlay();
+			return;
+		}
+
+		// Width and arrow spacing only affect drawn geometry — rebuild from the
+		// cached routes, no re-fetch or re-pathfind.
+		if ( _navRoutes.Visible )
+			RebuildOverlay();
+	}
+
+	// Keep the visualizers mutually exclusive: enabling one disables the others
+	// so only a single object ever lives in the shared overlay.
 	void DisableOthers( SerializedObject active )
 	{
-		foreach ( var so in new[] { _fogSection.RenderSo, _cubesSection.RenderSo, _linesSection.RenderSo } )
+		foreach ( var so in new[]
+		{
+			_fogSection.RenderSo, _cubesSection.RenderSo, _linesSection.RenderSo, _navSection.RenderSo,
+		} )
 		{
 			if ( so != null && so != active )
 				SetVisibleToggle( so, false );
 		}
 	}
+
+	static bool IsVisible( SerializedObject so ) =>
+		so?.GetProperty( "Visible" )?.GetValue( false ) ?? false;
 
 	static void SetVisibleToggle( SerializedObject so, bool value )
 	{
@@ -628,6 +666,94 @@ public sealed class AnalyticsDock : Widget
 		}
 	}
 
+	async System.Threading.Tasks.Task RefreshNavRoutesAsync( TrajectorySection section )
+	{
+		if ( section.Fetching )
+			return;
+
+		var scene = section.Scene.CurrentText;
+		if ( string.IsNullOrWhiteSpace( scene ) )
+		{
+			SetSectionStatus( section, "Pick a scene first (Load Scenes)." );
+			return;
+		}
+
+		try
+		{
+			section.Fetching = true;
+			SetSectionStatus( section, "Fetching trajectories…" );
+			var response = await CreateClient().GetTrajectoriesAsync(
+				scene, section.Query.From.Trim(), section.Query.To.Trim() );
+
+			// Resolve the walked route through the navmesh once, here — pathfinding
+			// isn't free, so look-only changes reuse the cached routes.
+			var navMesh = SceneEditorSession.Active?.Scene?.NavMesh;
+			section.Routes = response.Trajectories
+				.Select( t => BuildNavRoute( navMesh, t.Points ) )
+				.Where( r => r.Count >= 2 )
+				.ToList();
+
+			if ( section.Routes.Count == 0 )
+			{
+				if ( IsVisible( section.RenderSo ) )
+					_overlay.Hide();
+				SetSectionStatus( section, "No trajectories for this query." );
+				return;
+			}
+
+			SetVisibleToggle( section.RenderSo, true );
+			RebuildOverlay();
+			var note = navMesh is null ? " (no navmesh — straight estimates)" : "";
+			SetSectionStatus( section, response.Truncated
+				? $"{section.Routes.Count} route(s){note} (data truncated)."
+				: $"{section.Routes.Count} route(s){note}." );
+		}
+		catch ( SpatialApiException e )
+		{
+			SetSectionStatus( section, e.StatusCode switch
+			{
+				401 => "Invalid secret key.",
+				400 => "Invalid query parameters.",
+				0 => $"Network error: {e.Message}. Check the ingest URL and retry.",
+				_ => $"Request failed: {e.Message}",
+			} );
+		}
+		finally
+		{
+			section.Fetching = false;
+		}
+	}
+
+	// Estimate the walked route between successive samples by asking the scene
+	// navmesh for a path; fall back to a straight segment when the navmesh can't
+	// connect two points (or the scene has no navmesh).
+	static List<Vector3> BuildNavRoute( Sandbox.Navigation.NavMesh navMesh, IReadOnlyList<TrajectoryPoint> points )
+	{
+		var route = new List<Vector3>();
+		for ( var i = 0; i < points.Count - 1; i++ )
+		{
+			var a = new Vector3( points[i].X, points[i].Y, points[i].Z );
+			var b = new Vector3( points[i + 1].X, points[i + 1].Y, points[i + 1].Z );
+
+			List<Vector3> seg = null;
+			if ( navMesh is not null )
+			{
+				// GetSimplePath is obsolete in favour of CalculatePath, but it returns
+				// the point list directly and is all this estimate needs.
+				try { seg = navMesh.GetSimplePath( a, b ); }
+				catch { seg = null; }
+			}
+			if ( seg is null || seg.Count < 2 )
+				seg = new List<Vector3> { a, b };
+
+			// Skip each segment's first point after the first to drop the duplicate
+			// vertex shared with the previous segment's end.
+			for ( var s = route.Count == 0 ? 0 : 1; s < seg.Count; s++ )
+				route.Add( seg[s] );
+		}
+		return route;
+	}
+
 	void RebuildOverlay()
 	{
 		var world = SceneEditorSession.Active?.Scene?.SceneWorld;
@@ -648,6 +774,11 @@ public sealed class AnalyticsDock : Widget
 		{
 			if ( world == null ) { SetSectionStatus( _linesSection, "No active editor scene." ); return; }
 			_overlay.ShowLines( world, _linesSection.Trajectories, _lines.LineWidth );
+		}
+		else if ( _navRoutes.Visible && _navSection.Routes is { Count: > 0 } )
+		{
+			if ( world == null ) { SetSectionStatus( _navSection, "No active editor scene." ); return; }
+			_overlay.ShowNavRoutes( world, _navSection.Routes, _navRoutes.LineWidth, _navRoutes.ArrowSpacing );
 		}
 		else
 		{
