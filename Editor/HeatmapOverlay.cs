@@ -108,11 +108,20 @@ public sealed class HeatmapOverlay : IDisposable
 		if ( world == null || trajectories == null || trajectories.Count == 0 )
 			return;
 
+		// A SceneLineObject has no material by default and renders the engine
+		// error texture (the red/black stripes). Use the built-in line material
+		// with a white color map so the per-point vertex colors come through.
+		var material = Material.Load( "materials/default/default_line.vmat" ).CreateCopy();
+		material.Set( "Color", Texture.White );
+
 		var lines = new SceneLineObject( world )
 		{
 			Flags = { CastShadows = false },
+			Opaque = true,
 			Lighting = false,
 		};
+		lines.Material = material;
+		lines.Attributes.SetCombo( "D_BLEND", 0 );
 
 		for ( var i = 0; i < trajectories.Count; i++ )
 		{
