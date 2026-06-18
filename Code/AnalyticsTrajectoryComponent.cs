@@ -45,7 +45,7 @@ public sealed class AnalyticsTrajectoryComponent : Component
 	{
 		get
 		{
-			var interval = FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
+			var interval = FlushWindow.FloorInterval( FlushIntervalSeconds );
 			return $"~{60f / interval:0.#} events/min/player at {interval:0.#}s flush (per-player paths, not server-aggregable)";
 		}
 	}
@@ -53,14 +53,28 @@ public sealed class AnalyticsTrajectoryComponent : Component
 	MovementSampler? _sampler;
 	readonly List<Vector3> _points = new();
 	readonly List<long> _times = new();
-	double _nextFlushTime;
+	FlushWindow? _window;
+
+	static bool _advised;
 
 	protected override void OnEnabled()
 	{
 		_sampler = new MovementSampler( SampleIntervalSeconds, MinMoveDistance );
 		_points.Clear();
 		_times.Clear();
-		_nextFlushTime = Time.Now + FlushInterval();
+		_window = new FlushWindow( FlushIntervalSeconds );
+		_window.Schedule( Time.Now );
+		WarnOnce();
+	}
+
+	// One-time developer advisory. Fired the first time ANY instance of this
+	// high-volume tracker is enabled — not once per spawned entity, which floods
+	// the console when a prefab carrying the tracker is cloned many times.
+	static void WarnOnce()
+	{
+		if ( _advised )
+			return;
+		_advised = true;
 		Log.Warning( "[Analytics] AnalyticsTrajectoryComponent enabled — per-player trajectories cannot be aggregated server-side and are the highest event cost; prefer Dwell/Heatmap unless you need exact paths." );
 	}
 
@@ -79,17 +93,17 @@ public sealed class AnalyticsTrajectoryComponent : Component
 			_times.Add( DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() );
 		}
 
-		if ( Time.Now >= _nextFlushTime )
+		if ( _window!.IsDue( Time.Now ) )
 			Flush();
 	}
 
 	protected override void OnDisabled() => Flush();
 
-	float FlushInterval() => FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
-
 	void Flush()
 	{
-		_nextFlushTime = Time.Now + FlushInterval();
+		if ( _window is null )
+			return;
+		_window.Schedule( Time.Now );
 
 		// Two or fewer points isn't a path worth shipping; keep them buffered so the
 		// next window can extend them rather than emitting a degenerate trajectory.

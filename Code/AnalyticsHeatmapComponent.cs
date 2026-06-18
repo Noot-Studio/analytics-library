@@ -39,7 +39,7 @@ public sealed class AnalyticsHeatmapComponent : Component
 	{
 		get
 		{
-			var interval = FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
+			var interval = FlushWindow.FloorInterval( FlushIntervalSeconds );
 			return $"~{60f / interval:0.#} events/min/player at {interval:0.#}s flush (plus early flushes at {MaxCellsPerFlush} cells)";
 		}
 	}
@@ -47,13 +47,27 @@ public sealed class AnalyticsHeatmapComponent : Component
 	SpatialGrid? _grid;
 	readonly CellAccumulator _accumulator = new();
 	(int, int, int)? _lastCell;
-	double _nextFlushTime;
+	FlushWindow? _window;
+
+	static bool _advised;
 
 	protected override void OnEnabled()
 	{
 		_grid = new SpatialGrid( CellSize );
 		_lastCell = null;
-		_nextFlushTime = Time.Now + FlushInterval();
+		_window = new FlushWindow( FlushIntervalSeconds );
+		_window.Schedule( Time.Now );
+		WarnOnce();
+	}
+
+	// One-time developer advisory. Fired the first time ANY instance of this
+	// high-volume tracker is enabled — not once per spawned entity, which floods
+	// the console when a prefab carrying the tracker is cloned many times.
+	static void WarnOnce()
+	{
+		if ( _advised )
+			return;
+		_advised = true;
 		Log.Warning( "[Analytics] AnalyticsHeatmapComponent enabled — spatial density tracking is high-volume; tune CellSize/FlushIntervalSeconds and prefer host-only sampling." );
 	}
 
@@ -75,17 +89,17 @@ public sealed class AnalyticsHeatmapComponent : Component
 			_lastCell = cell;
 		}
 
-		if ( Time.Now >= _nextFlushTime || _accumulator.Count >= MaxCellsPerFlush )
+		if ( _window!.IsDue( Time.Now ) || _accumulator.Count >= MaxCellsPerFlush )
 			Flush();
 	}
 
 	protected override void OnDisabled() => Flush();
 
-	float FlushInterval() => FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
-
 	void Flush()
 	{
-		_nextFlushTime = Time.Now + FlushInterval();
+		if ( _window is null )
+			return;
+		_window.Schedule( Time.Now );
 
 		if ( _accumulator.Count == 0 )
 			return;

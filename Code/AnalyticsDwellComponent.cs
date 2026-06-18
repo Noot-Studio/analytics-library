@@ -39,19 +39,33 @@ public sealed class AnalyticsDwellComponent : Component
 	{
 		get
 		{
-			var interval = FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
+			var interval = FlushWindow.FloorInterval( FlushIntervalSeconds );
 			return $"~{60f / interval:0.#} events/min/player at {interval:0.#}s flush (plus early flushes at {MaxCellsPerFlush} cells)";
 		}
 	}
 
 	SpatialGrid? _grid;
 	readonly CellAccumulator _accumulator = new();
-	double _nextFlushTime;
+	FlushWindow? _window;
+
+	static bool _advised;
 
 	protected override void OnEnabled()
 	{
 		_grid = new SpatialGrid( CellSize );
-		_nextFlushTime = Time.Now + FlushInterval();
+		_window = new FlushWindow( FlushIntervalSeconds );
+		_window.Schedule( Time.Now );
+		WarnOnce();
+	}
+
+	// One-time developer advisory. Fired the first time ANY instance of this
+	// high-volume tracker is enabled — not once per spawned entity, which floods
+	// the console when a prefab carrying the tracker is cloned many times.
+	static void WarnOnce()
+	{
+		if ( _advised )
+			return;
+		_advised = true;
 		Log.Warning( "[Analytics] AnalyticsDwellComponent enabled — spatial dwell tracking is high-volume; tune CellSize/FlushIntervalSeconds and prefer host-only sampling." );
 	}
 
@@ -66,17 +80,17 @@ public sealed class AnalyticsDwellComponent : Component
 		var cell = _grid.Cell( WorldPosition );
 		_accumulator.AddDwell( cell, (int)(Time.Delta * 1000f) );
 
-		if ( Time.Now >= _nextFlushTime || _accumulator.Count >= MaxCellsPerFlush )
+		if ( _window!.IsDue( Time.Now ) || _accumulator.Count >= MaxCellsPerFlush )
 			Flush();
 	}
 
 	protected override void OnDisabled() => Flush();
 
-	float FlushInterval() => FlushIntervalSeconds < 1f ? 1f : FlushIntervalSeconds;
-
 	void Flush()
 	{
-		_nextFlushTime = Time.Now + FlushInterval();
+		if ( _window is null )
+			return;
+		_window.Schedule( Time.Now );
 
 		if ( _accumulator.Count == 0 )
 			return;
