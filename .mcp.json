@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sdocs": {
+      "type": "http",
+      "url": "https://sdocs.suiram.dev/api/v1/mcp"
+    }
+  }
+}
