@@ -146,6 +146,12 @@ public sealed class AnalyticsDock : Widget
 		public ExpandGroup Group;
 		public SerializedObject RenderSo;
 		public bool Fetching;
+		// True while a combo list is repopulated programmatically, so the
+		// auto-refresh hook ignores selections the dock makes itself.
+		public bool Suppress;
+		// Re-fetch this section's dataset (voxels or trajectories). Wired to combo
+		// selection and date commits so changing a query field refreshes the view.
+		public Action Refresh;
 	}
 
 	/// <summary>Voxel heatmap section (fog or cubes): adds an event-type picker and the fetched grid.</summary>
@@ -319,6 +325,27 @@ public sealed class AnalyticsDock : Widget
 		return combo;
 	}
 
+	// Bind the From/To window into the sheet and re-fetch when a field commits
+	// (Enter/blur fires OnPropertyChanged, not each keystroke). TriggerAutoRefresh
+	// no-ops until a scene is picked, so editing dates during setup doesn't nag.
+	void AddQuerySheet( ControlSheet sheet, SectionBase section )
+	{
+		var so = EditorUtility.GetSerializedObject( section.Query );
+		so.OnPropertyChanged += _ => TriggerAutoRefresh( section );
+		sheet.AddObject( so );
+	}
+
+	// Combo-selection / date-commit hook: skip selections the dock makes while
+	// repopulating a list, and wait for a scene, then re-fetch the section.
+	void TriggerAutoRefresh( SectionBase section )
+	{
+		if ( section.Suppress )
+			return;
+		if ( string.IsNullOrWhiteSpace( section.Scene.CurrentText ) )
+			return;
+		section.Refresh?.Invoke();
+	}
+
 	Widget BuildVisualizerGroup( VisualizerSection section, object renderSettings,
 		SerializedObject.PropertyChangedDelegate onRenderChanged, string title, string icon, string cookie )
 	{
@@ -333,18 +360,16 @@ public sealed class AnalyticsDock : Widget
 		section.RenderSo.OnPropertyChanged += onRenderChanged;
 		sheet.AddObject( section.RenderSo );
 
+		section.Refresh = () => _ = RefreshAsync( section );
+
 		section.Scene = AddComboRow( sheet, "Scene",
 			() => _ = LoadScenesAsync( section ), "Load scenes with spatial data" );
 		section.EventType = AddComboRow( sheet, "Event Type",
 			() => _ = LoadEventTypesAsync( section ), "Load spatial event types in range" );
 
-		sheet.AddObject( EditorUtility.GetSerializedObject( section.Query ) );
+		AddQuerySheet( sheet, section );
 
 		content.Layout.Add( sheet );
-
-		var refresh = new Button( "Refresh", "refresh", this );
-		refresh.Clicked = () => _ = RefreshAsync( section );
-		content.Layout.Add( refresh );
 
 		section.Status = MakeStatusLabel( content );
 
@@ -367,16 +392,14 @@ public sealed class AnalyticsDock : Widget
 		section.RenderSo.OnPropertyChanged += onRenderChanged;
 		sheet.AddObject( section.RenderSo );
 
+		section.Refresh = onRefresh;
+
 		section.Scene = AddComboRow( sheet, "Scene",
 			() => _ = LoadScenesAsync( section ), "Load scenes with spatial data" );
 
-		sheet.AddObject( EditorUtility.GetSerializedObject( section.Query ) );
+		AddQuerySheet( sheet, section );
 
 		content.Layout.Add( sheet );
-
-		var refresh = new Button( "Refresh", "refresh", this );
-		refresh.Clicked = onRefresh;
-		content.Layout.Add( refresh );
 
 		section.Status = MakeStatusLabel( content );
 
@@ -501,12 +524,16 @@ public sealed class AnalyticsDock : Widget
 			SetSectionStatus( section, "Loading scenes…" );
 			var response = await CreateClient().GetScenesAsync( section.Query.From.Trim(), section.Query.To.Trim() );
 			var selected = section.Scene.CurrentText;
+			section.Suppress = true;
 			section.Scene.Clear();
 			foreach ( var scene in response.Scenes )
-				section.Scene.AddItem( scene.Scene );
+				section.Scene.AddItem( scene.Scene, onSelected: () => TriggerAutoRefresh( section ) );
 			if ( !string.IsNullOrEmpty( selected ) && response.Scenes.Any( s => s.Scene == selected ) )
 				section.Scene.TrySelectNamed( selected );
+			section.Suppress = false;
 			SetSectionStatus( section, response.Scenes.Count == 0 ? "No scenes with spatial data in this range." : $"{response.Scenes.Count} scene(s)." );
+			// Reflect the now-selected scene (first item or restored) without a click.
+			TriggerAutoRefresh( section );
 		}
 		catch ( SpatialApiException e )
 		{
@@ -527,14 +554,18 @@ public sealed class AnalyticsDock : Widget
 				section.Query.From.Trim(), section.Query.To.Trim(),
 				string.IsNullOrWhiteSpace( scene ) ? null : scene );
 			var selected = section.EventType.CurrentText;
+			section.Suppress = true;
 			section.EventType.Clear();
 			foreach ( var type in response.EventTypes )
-				section.EventType.AddItem( type );
+				section.EventType.AddItem( type, onSelected: () => TriggerAutoRefresh( section ) );
 			if ( !string.IsNullOrEmpty( selected ) && response.EventTypes.Any( t => t == selected ) )
 				section.EventType.TrySelectNamed( selected );
+			section.Suppress = false;
 			SetSectionStatus( section, response.EventTypes.Count == 0
 				? "No spatial event types in this range."
 				: $"{response.EventTypes.Count} event type(s)." );
+			// Apply the now-selected event type to the heatmap without a click.
+			TriggerAutoRefresh( section );
 		}
 		catch ( SpatialApiException e )
 		{
