@@ -37,6 +37,32 @@ public sealed class SceneDto
 	[JsonPropertyName( "eventCount" )] public float EventCount { get; set; }
 }
 
+/// <summary>Event-type list from GET /v1/spatial/event-types (spatial types only).</summary>
+public sealed class EventTypesResponse
+{
+	[JsonPropertyName( "eventTypes" )] public List<string> EventTypes { get; set; } = new();
+}
+
+/// <summary>Trajectories response from GET /v1/spatial/trajectories.</summary>
+public sealed class TrajectoriesResponse
+{
+	[JsonPropertyName( "trajectories" )] public List<TrajectoryDto> Trajectories { get; set; } = new();
+	[JsonPropertyName( "truncated" )] public bool Truncated { get; set; }
+}
+
+public sealed class TrajectoryDto
+{
+	[JsonPropertyName( "playerId" )] public string PlayerId { get; set; } = "";
+	[JsonPropertyName( "points" )] public List<TrajectoryPoint> Points { get; set; } = new();
+}
+
+public sealed class TrajectoryPoint
+{
+	[JsonPropertyName( "x" )] public float X { get; set; }
+	[JsonPropertyName( "y" )] public float Y { get; set; }
+	[JsonPropertyName( "z" )] public float Z { get; set; }
+}
+
 /// <summary>Thrown for non-2xx responses; carries the HTTP status for dock error display.</summary>
 public sealed class SpatialApiException : Exception
 {
@@ -70,8 +96,6 @@ public sealed class SpatialApiClient
 		public string From { get; set; } = "";
 		public string To { get; set; } = "";
 		public string EventType { get; set; }
-		public string MetricKey { get; set; }
-		public string MetricAgg { get; set; }
 	}
 
 	public Task<VoxelsResponse> GetVoxelsAsync( VoxelsQuery q )
@@ -85,11 +109,6 @@ public sealed class SpatialApiClient
 		};
 		if ( !string.IsNullOrWhiteSpace( q.EventType ) )
 			qs.Add( $"eventType={Uri.EscapeDataString( q.EventType )}" );
-		if ( !string.IsNullOrWhiteSpace( q.MetricKey ) )
-		{
-			qs.Add( $"metricKey={Uri.EscapeDataString( q.MetricKey )}" );
-			qs.Add( $"metricAgg={Uri.EscapeDataString( q.MetricAgg ?? "avg" )}" );
-		}
 
 		return GetAsync<VoxelsResponse>( $"/v1/spatial/voxels?{string.Join( "&", qs )}" );
 	}
@@ -97,6 +116,25 @@ public sealed class SpatialApiClient
 	public Task<ScenesResponse> GetScenesAsync( string from, string to ) =>
 		GetAsync<ScenesResponse>(
 			$"/v1/spatial/scenes?from={Uri.EscapeDataString( from )}&to={Uri.EscapeDataString( to )}" );
+
+	/// <summary>Spatial event types available in the range (optionally one scene), for the heatmap dropdown.</summary>
+	public Task<EventTypesResponse> GetEventTypesAsync( string from, string to, string? scene = null )
+	{
+		var qs = new List<string>
+		{
+			$"from={Uri.EscapeDataString( from )}",
+			$"to={Uri.EscapeDataString( to )}",
+		};
+		if ( !string.IsNullOrWhiteSpace( scene ) )
+			qs.Add( $"scene={Uri.EscapeDataString( scene )}" );
+
+		return GetAsync<EventTypesResponse>( $"/v1/spatial/event-types?{string.Join( "&", qs )}" );
+	}
+
+	/// <summary>Per-player trajectory paths for one scene/range (used by the Path Lines visualizer).</summary>
+	public Task<TrajectoriesResponse> GetTrajectoriesAsync( string scene, string from, string to ) =>
+		GetAsync<TrajectoriesResponse>(
+			$"/v1/spatial/trajectories?scene={Uri.EscapeDataString( scene )}&from={Uri.EscapeDataString( from )}&to={Uri.EscapeDataString( to )}" );
 
 	async Task<T> GetAsync<T>( string path )
 	{

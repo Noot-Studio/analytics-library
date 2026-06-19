@@ -21,6 +21,10 @@ public sealed class HeatmapOverlay : IDisposable
 	const float NormalizePercentile = 0.95f;
 	const float MinCubeScale = 0.25f;
 
+	// Fixed raymarch step count for the fog volume. Was an exposed dock control;
+	// removed from the UI, baked here so the shader still gets a sane value.
+	const float FogSteps = 96f;
+
 	SceneObject _sceneObject;
 	Texture _volumeTexture;
 
@@ -35,8 +39,7 @@ public sealed class HeatmapOverlay : IDisposable
 		float voxelSize,
 		bool useMetric,
 		float density,
-		float falloff,
-		float steps )
+		float falloff )
 	{
 		Hide();
 
@@ -44,20 +47,19 @@ public sealed class HeatmapOverlay : IDisposable
 			return;
 
 		if ( mode == HeatmapRenderMode.Fog )
-			ShowFog( world, grid, density, falloff, steps );
+			ShowFog( world, grid, density, falloff );
 		else
 			ShowCubes( world, voxels, voxelSize, useMetric );
 	}
 
 	/// <summary>Push fog look attributes without re-fetching or rebuilding.</summary>
-	public void UpdateLook( float density, float falloff, float steps )
+	public void UpdateLook( float density, float falloff )
 	{
 		if ( !_sceneObject.IsValid() )
 			return;
 
 		_sceneObject.Attributes.Set( "Density", density );
 		_sceneObject.Attributes.Set( "Falloff", falloff );
-		_sceneObject.Attributes.Set( "Steps", steps );
 	}
 
 	public void Hide()
@@ -70,7 +72,7 @@ public sealed class HeatmapOverlay : IDisposable
 
 	public void Dispose() => Hide();
 
-	void ShowFog( SceneWorld world, DensityGrid grid, float density, float falloff, float steps )
+	void ShowFog( SceneWorld world, DensityGrid grid, float density, float falloff )
 	{
 		var mins = grid.Center - grid.Size / 2f;
 		var maxs = grid.Center + grid.Size / 2f;
@@ -90,7 +92,164 @@ public sealed class HeatmapOverlay : IDisposable
 		_sceneObject.Attributes.Set( "DensityTexture", _volumeTexture );
 		_sceneObject.Attributes.Set( "VolumeMins", mins );
 		_sceneObject.Attributes.Set( "VolumeSize", grid.Size );
-		UpdateLook( density, falloff, steps );
+		_sceneObject.Attributes.Set( "Steps", FogSteps );
+		UpdateLook( density, falloff );
+	}
+
+	/// <summary>
+	/// Draw each trajectory as its own polyline in a single <see cref="SceneLineObject"/>.
+	/// Colors step through hue by the golden ratio so adjacent paths stay visually
+	/// distinct. Replaces any previous overlay object (modes are exclusive).
+	/// </summary>
+	public void ShowLines( SceneWorld world, IReadOnlyList<TrajectoryDto> trajectories, float lineWidth )
+	{
+		Hide();
+
+		if ( world == null || trajectories == null || trajectories.Count == 0 )
+			return;
+
+		var lines = CreateLineObject( world );
+
+		for ( var i = 0; i < trajectories.Count; i++ )
+		{
+			var points = trajectories[i].Points;
+			if ( points == null || points.Count < 2 )
+				continue;
+
+			var color = PathColor( i );
+			lines.StartLine();
+			foreach ( var p in points )
+				lines.AddLinePoint( new Vector3( p.X, p.Y, p.Z ), color, lineWidth );
+			lines.EndLine();
+		}
+
+		_sceneObject = lines;
+	}
+
+	/// <summary>
+	/// Draw pre-computed navmesh routes (the estimated walked path between samples)
+	/// as colored polylines with periodic chevrons marking the direction of travel.
+	/// Routes are open — the last point is never joined back to the first.
+	/// </summary>
+	public void ShowNavRoutes( SceneWorld world, IReadOnlyList<List<Vector3>> routes,
+		float lineWidth, float arrowSpacing )
+	{
+		Hide();
+
+		if ( world == null || routes == null || routes.Count == 0 )
+			return;
+
+		var lines = CreateLineObject( world );
+
+		for ( var i = 0; i < routes.Count; i++ )
+		{
+			var route = routes[i];
+			if ( route == null || route.Count < 2 )
+				continue;
+
+			var color = PathColor( i );
+			lines.StartLine();
+			foreach ( var p in route )
+				lines.AddLinePoint( p, color, lineWidth );
+			lines.EndLine();
+
+			AddArrows( lines, route, color, lineWidth, arrowSpacing );
+		}
+
+		_sceneObject = lines;
+	}
+
+	// A SceneLineObject has no material by default and renders the engine error
+	// texture (the red/black stripes). The built-in line material with a white
+	// color map lets the per-point vertex colors come through.
+	static SceneLineObject CreateLineObject( SceneWorld world )
+	{
+		var material = Material.Load( "materials/default/default_line.vmat" ).CreateCopy();
+		material.Set( "Color", Texture.White );
+
+		var lines = new SceneLineObject( world )
+		{
+			Flags = { CastShadows = false },
+			Opaque = true,
+			Lighting = false,
+		};
+		lines.Material = material;
+		lines.Attributes.SetCombo( "D_BLEND", 0 );
+		return lines;
+	}
+
+	// Drop a forward-pointing chevron every `spacing` units along the route so
+	// the direction of travel reads at a glance.
+	static void AddArrows( SceneLineObject lines, List<Vector3> route, Color color, float width, float spacing )
+	{
+		if ( spacing <= 0f )
+			return;
+
+		const float ArrowSize = 16f;
+		var walked = 0f;
+		var nextAt = spacing;
+
+		for ( var i = 0; i < route.Count - 1; i++ )
+		{
+			var a = route[i];
+			var seg = route[i + 1] - a;
+			var segLen = seg.Length;
+			if ( segLen < 0.01f )
+				continue;
+
+			var dir = seg / segLen;
+			while ( nextAt <= walked + segLen )
+			{
+				AddChevron( lines, a + dir * (nextAt - walked), dir, ArrowSize, color, width );
+				nextAt += spacing;
+			}
+			walked += segLen;
+		}
+	}
+
+	// A "^" pointing along `dir`: back-left → tip → back-right.
+	static void AddChevron( SceneLineObject lines, Vector3 pos, Vector3 dir, float size, Color color, float width )
+	{
+		var right = Vector3.Cross( dir, Vector3.Up );
+		if ( right.LengthSquared < 0.0001f )
+			right = Vector3.Forward;
+		right = right.Normal;
+
+		var tip = pos + dir * size;
+		var backLeft = pos - dir * size + right * size;
+		var backRight = pos - dir * size - right * size;
+
+		lines.StartLine();
+		lines.AddLinePoint( backLeft, color, width );
+		lines.AddLinePoint( tip, color, width );
+		lines.AddLinePoint( backRight, color, width );
+		lines.EndLine();
+	}
+
+	// Distinct categorical color per path. The golden-ratio hue step keeps
+	// consecutive paths far apart on the wheel instead of bunching.
+	static Color PathColor( int index )
+	{
+		var hue = (index * 0.618_033_988f) % 1f;
+		return HsvToColor( hue, 0.85f, 1f );
+	}
+
+	static Color HsvToColor( float h, float s, float v )
+	{
+		var sector = (h - MathF.Floor( h )) * 6f;
+		var c = v * s;
+		var x = c * (1f - MathF.Abs( sector % 2f - 1f ));
+		var m = v - c;
+
+		float r, g, b;
+		if ( sector < 1f ) { r = c; g = x; b = 0f; }
+		else if ( sector < 2f ) { r = x; g = c; b = 0f; }
+		else if ( sector < 3f ) { r = 0f; g = c; b = x; }
+		else if ( sector < 4f ) { r = 0f; g = x; b = c; }
+		else if ( sector < 5f ) { r = x; g = 0f; b = c; }
+		else { r = c; g = 0f; b = x; }
+
+		return new Color( r + m, g + m, b + m );
 	}
 
 	void ShowCubes( SceneWorld world, IReadOnlyList<HeatmapVoxel> voxels, float voxelSize, bool useMetric )

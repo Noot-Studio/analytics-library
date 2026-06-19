@@ -91,13 +91,9 @@ public sealed class AnalyticsDock : Widget
 	const string DefaultIngestUrl = "https://ingest.sbox-analytics.com";
 	const string DateFormat = "yyyy-MM-dd";
 
-	public enum MetricAggregation
-	{
-		Avg,
-		Max,
-		Min,
-		Sum,
-	}
+	// Voxel size is no longer a dock control (its down-sampling needs fixing). A
+	// fixed cell size still satisfies the ingest query and the density grid build.
+	const float DefaultVoxelSize = 64f;
 
 	sealed class ConnectionSettings
 	{
@@ -105,14 +101,12 @@ public sealed class AnalyticsDock : Widget
 		[Title( "Secret Key" )] public string SecretKey { get; set; } = "";
 	}
 
-	sealed class HeatmapQuerySettings
+	// Shared query window for every visualizer section. Event type is picked from
+	// a fetched combo (see VisualizerSection), not stored here.
+	sealed class DateRangeSettings
 	{
-		[Title( "Event Type" )] public string EventType { get; set; } = "";
 		[Title( "From (yyyy-mm-dd)" )] public string From { get; set; } = DateTime.UtcNow.AddDays( -30 ).ToString( DateFormat );
 		[Title( "To (yyyy-mm-dd)" )] public string To { get; set; } = DateTime.UtcNow.ToString( DateFormat );
-		[Title( "Voxel Size" )] public float VoxelSize { get; set; } = 64f;
-		[Title( "Metric Key" )] public string MetricKey { get; set; } = "";
-		[Title( "Metric Aggregation" )] public MetricAggregation MetricAgg { get; set; } = MetricAggregation.Avg;
 	}
 
 	sealed class FogRenderSettings
@@ -120,7 +114,6 @@ public sealed class AnalyticsDock : Widget
 		[Title( "Show Fog" )] public bool Visible { get; set; }
 		[Range( 0.1f, 20f )] public float Density { get; set; } = 3.5f;
 		[Range( 0.25f, 5f )] public float Falloff { get; set; } = 1.8f;
-		[Range( 16f, 256f )] public float Steps { get; set; } = 96f;
 	}
 
 	sealed class CubesRenderSettings
@@ -128,31 +121,69 @@ public sealed class AnalyticsDock : Widget
 		[Title( "Show Cubes" )] public bool Visible { get; set; }
 	}
 
-	/// <summary>
-	/// One visualizer's UI handles and last-fetched dataset. Each section owns
-	/// its query settings so the two visualizers can target different data.
-	/// </summary>
-	sealed class VisualizerSection
+	sealed class LinesRenderSettings
 	{
-		public readonly HeatmapQuerySettings Query = new();
+		[Title( "Show Path Lines" )] public bool Visible { get; set; }
+		[Title( "Line Width" ), Range( 0.5f, 16f )] public float LineWidth { get; set; } = 3f;
+	}
+
+	sealed class NavRoutesRenderSettings
+	{
+		[Title( "Show Nav Routes" )] public bool Visible { get; set; }
+		[Title( "Line Width" ), Range( 0.5f, 16f )] public float LineWidth { get; set; } = 3f;
+		[Title( "Arrow Spacing" ), Range( 32f, 512f )] public float ArrowSpacing { get; set; } = 128f;
+	}
+
+	/// <summary>
+	/// Shared UI handles every visualizer section owns: its scene picker, status
+	/// label, group, render-settings object, query window, and in-flight guard.
+	/// </summary>
+	abstract class SectionBase
+	{
+		public readonly DateRangeSettings Query = new();
 		public ComboBox Scene;
 		public Label Status;
 		public ExpandGroup Group;
 		public SerializedObject RenderSo;
+		public bool Fetching;
+		// True while a combo list is repopulated programmatically, so the
+		// auto-refresh hook ignores selections the dock makes itself.
+		public bool Suppress;
+		// Re-fetch this section's dataset (voxels or trajectories). Wired to combo
+		// selection and date commits so changing a query field refreshes the view.
+		public Action Refresh;
+	}
+
+	/// <summary>Voxel heatmap section (fog or cubes): adds an event-type picker and the fetched grid.</summary>
+	sealed class VisualizerSection : SectionBase
+	{
+		public ComboBox EventType;
 
 		// Look-only changes rebuild from this without another network round-trip.
 		public List<HeatmapVoxel> Voxels;
 		public DensityGrid Grid;
 		public float FetchedVoxelSize;
-		public bool FetchedUseMetric;
-		public bool Fetching;
+	}
+
+	/// <summary>
+	/// Trajectory-fed section. Holds the raw fetched paths (Path Lines) and, for
+	/// the Nav Routes section, the navmesh-estimated routes derived from them.
+	/// </summary>
+	sealed class TrajectorySection : SectionBase
+	{
+		public List<TrajectoryDto> Trajectories;
+		public List<List<Vector3>> Routes;
 	}
 
 	readonly ConnectionSettings _connection = new();
 	readonly FogRenderSettings _fog = new();
 	readonly CubesRenderSettings _cubes = new();
+	readonly LinesRenderSettings _lines = new();
+	readonly NavRoutesRenderSettings _navRoutes = new();
 	readonly VisualizerSection _fogSection = new();
 	readonly VisualizerSection _cubesSection = new();
+	readonly TrajectorySection _linesSection = new();
+	readonly TrajectorySection _navSection = new();
 
 	Label _connectionStatus;
 	ExpandGroup _connectionGroup;
@@ -188,6 +219,10 @@ public sealed class AnalyticsDock : Widget
 			"Fog Heatmap", "cloud_queue", "fog" ) );
 		canvas.Add( BuildVisualizerGroup( _cubesSection, _cubes, OnCubesSettingChanged,
 			"Voxel Heatmap", "view_in_ar", "cubes" ) );
+		canvas.Add( BuildTrajectoryGroup( _linesSection, _lines, OnLinesSettingChanged,
+			() => _ = RefreshTrajectoriesAsync( _linesSection ), "Path Lines", "timeline", "lines" ) );
+		canvas.Add( BuildTrajectoryGroup( _navSection, _navRoutes, OnNavRoutesSettingChanged,
+			() => _ = RefreshNavRoutesAsync( _navSection ), "Nav Routes", "alt_route", "navroutes" ) );
 		canvas.AddStretchCell();
 	}
 
@@ -224,7 +259,7 @@ public sealed class AnalyticsDock : Widget
 
 	void SetConnectionStatus( string text ) => SetStatus( _connectionStatus, _connectionGroup, text );
 
-	static void SetSectionStatus( VisualizerSection section, string text ) => SetStatus( section.Status, section.Group, text );
+	static void SetSectionStatus( SectionBase section, string text ) => SetStatus( section.Status, section.Group, text );
 
 	ExpandGroup MakeGroup( string title, string icon, string cookie, Widget content )
 	{
@@ -270,6 +305,47 @@ public sealed class AnalyticsDock : Widget
 		return _connectionGroup;
 	}
 
+	// A combo fed from the API (not free text) with its own refresh button, laid
+	// into the sheet's grid. Label width matches the sheet's label column (min
+	// 120, spacing 10) so the combo lines up with the other controls.
+	ComboBox AddComboRow( ControlSheet sheet, string label, System.Action onRefresh, string refreshTip )
+	{
+		var combo = new ComboBox( this );
+		var row = Layout.Row();
+		row.Spacing = 10f;
+		var lbl = new Label( label, this );
+		lbl.FixedWidth = 120f;
+		row.Add( lbl );
+		row.Add( combo, 1 );
+		var refresh = new Button( "", "refresh", this );
+		refresh.ToolTip = refreshTip;
+		refresh.Clicked = onRefresh;
+		row.Add( refresh );
+		sheet.AddLayout( row );
+		return combo;
+	}
+
+	// Bind the From/To window into the sheet and re-fetch when a field commits
+	// (Enter/blur fires OnPropertyChanged, not each keystroke). TriggerAutoRefresh
+	// no-ops until a scene is picked, so editing dates during setup doesn't nag.
+	void AddQuerySheet( ControlSheet sheet, SectionBase section )
+	{
+		var so = EditorUtility.GetSerializedObject( section.Query );
+		so.OnPropertyChanged += _ => TriggerAutoRefresh( section );
+		sheet.AddObject( so );
+	}
+
+	// Combo-selection / date-commit hook: skip selections the dock makes while
+	// repopulating a list, and wait for a scene, then re-fetch the section.
+	void TriggerAutoRefresh( SectionBase section )
+	{
+		if ( section.Suppress )
+			return;
+		if ( string.IsNullOrWhiteSpace( section.Scene.CurrentText ) )
+			return;
+		section.Refresh?.Invoke();
+	}
+
 	Widget BuildVisualizerGroup( VisualizerSection section, object renderSettings,
 		SerializedObject.PropertyChangedDelegate onRenderChanged, string title, string icon, string cookie )
 	{
@@ -284,29 +360,46 @@ public sealed class AnalyticsDock : Widget
 		section.RenderSo.OnPropertyChanged += onRenderChanged;
 		sheet.AddObject( section.RenderSo );
 
-		// Scene comes from the API, not free text — a combo fed by Load Scenes.
-		// Label width matches the sheet's label column (min 120, spacing 10) so
-		// the combo lines up with the other controls.
-		section.Scene = new ComboBox( this );
-		var sceneRow = Layout.Row();
-		sceneRow.Spacing = 10f;
-		var sceneLabel = new Label( "Scene", this );
-		sceneLabel.FixedWidth = 120f;
-		sceneRow.Add( sceneLabel );
-		sceneRow.Add( section.Scene, 1 );
-		var loadScenes = new Button( "", "refresh", this );
-		loadScenes.ToolTip = "Load scenes with spatial data";
-		loadScenes.Clicked = () => _ = LoadScenesAsync( section );
-		sceneRow.Add( loadScenes );
-		sheet.AddLayout( sceneRow );
+		section.Refresh = () => _ = RefreshAsync( section );
 
-		sheet.AddObject( EditorUtility.GetSerializedObject( section.Query ) );
+		section.Scene = AddComboRow( sheet, "Scene",
+			() => _ = LoadScenesAsync( section ), "Load scenes with spatial data" );
+		section.EventType = AddComboRow( sheet, "Event Type",
+			() => _ = LoadEventTypesAsync( section ), "Load spatial event types in range" );
+
+		AddQuerySheet( sheet, section );
 
 		content.Layout.Add( sheet );
 
-		var refresh = new Button( "Refresh", "refresh", this );
-		refresh.Clicked = () => _ = RefreshAsync( section );
-		content.Layout.Add( refresh );
+		section.Status = MakeStatusLabel( content );
+
+		section.Group = MakeGroup( title, icon, cookie, content );
+		return section.Group;
+	}
+
+	Widget BuildTrajectoryGroup( TrajectorySection section, object renderSettings,
+		SerializedObject.PropertyChangedDelegate onRenderChanged, System.Action onRefresh,
+		string title, string icon, string cookie )
+	{
+		var content = new Widget( this );
+		content.Layout = Layout.Column();
+		content.Layout.Margin = new Sandbox.UI.Margin( 8f, 8f, 8f, 8f );
+		content.Layout.Spacing = 4f;
+
+		var sheet = new ControlSheet();
+
+		section.RenderSo = EditorUtility.GetSerializedObject( renderSettings );
+		section.RenderSo.OnPropertyChanged += onRenderChanged;
+		sheet.AddObject( section.RenderSo );
+
+		section.Refresh = onRefresh;
+
+		section.Scene = AddComboRow( sheet, "Scene",
+			() => _ = LoadScenesAsync( section ), "Load scenes with spatial data" );
+
+		AddQuerySheet( sheet, section );
+
+		content.Layout.Add( sheet );
 
 		section.Status = MakeStatusLabel( content );
 
@@ -318,15 +411,15 @@ public sealed class AnalyticsDock : Widget
 	{
 		if ( prop.Name == nameof( FogRenderSettings.Visible ) )
 		{
-			// The overlay holds one scene object — the two modes are exclusive.
+			// The overlay holds one scene object — the visualizers are exclusive.
 			if ( _fog.Visible )
-				SetVisibleToggle( _cubesSection.RenderSo, false );
-			RebuildOrHide();
+				DisableOthers( _fogSection.RenderSo );
+			RebuildOverlay();
 			return;
 		}
 
 		// Fog look params live in material attributes — update in place, no re-fetch.
-		_overlay.UpdateLook( _fog.Density, _fog.Falloff, _fog.Steps );
+		_overlay.UpdateLook( _fog.Density, _fog.Falloff );
 	}
 
 	void OnCubesSettingChanged( SerializedProperty prop )
@@ -335,9 +428,58 @@ public sealed class AnalyticsDock : Widget
 			return;
 
 		if ( _cubes.Visible )
-			SetVisibleToggle( _fogSection.RenderSo, false );
-		RebuildOrHide();
+			DisableOthers( _cubesSection.RenderSo );
+		RebuildOverlay();
 	}
+
+	void OnLinesSettingChanged( SerializedProperty prop )
+	{
+		if ( prop.Name == nameof( LinesRenderSettings.Visible ) )
+		{
+			if ( _lines.Visible )
+				DisableOthers( _linesSection.RenderSo );
+			RebuildOverlay();
+			return;
+		}
+
+		// Line width is baked per-vertex, so a width change rebuilds the line
+		// object from the cached trajectories — no re-fetch.
+		if ( _lines.Visible )
+			RebuildOverlay();
+	}
+
+	void OnNavRoutesSettingChanged( SerializedProperty prop )
+	{
+		if ( prop.Name == nameof( NavRoutesRenderSettings.Visible ) )
+		{
+			if ( _navRoutes.Visible )
+				DisableOthers( _navSection.RenderSo );
+			RebuildOverlay();
+			return;
+		}
+
+		// Width and arrow spacing only affect drawn geometry — rebuild from the
+		// cached routes, no re-fetch or re-pathfind.
+		if ( _navRoutes.Visible )
+			RebuildOverlay();
+	}
+
+	// Keep the visualizers mutually exclusive: enabling one disables the others
+	// so only a single object ever lives in the shared overlay.
+	void DisableOthers( SerializedObject active )
+	{
+		foreach ( var so in new[]
+		{
+			_fogSection.RenderSo, _cubesSection.RenderSo, _linesSection.RenderSo, _navSection.RenderSo,
+		} )
+		{
+			if ( so != null && so != active )
+				SetVisibleToggle( so, false );
+		}
+	}
+
+	static bool IsVisible( SerializedObject so ) =>
+		so?.GetProperty( "Visible" )?.GetValue( false ) ?? false;
 
 	static void SetVisibleToggle( SerializedObject so, bool value )
 	{
@@ -348,17 +490,9 @@ public sealed class AnalyticsDock : Widget
 			prop.SetValue( value );
 	}
 
-	VisualizerSection ActiveSection =>
+	VisualizerSection ActiveVoxelSection =>
 		_fog.Visible ? _fogSection :
 		_cubes.Visible ? _cubesSection : null;
-
-	void RebuildOrHide()
-	{
-		if ( ActiveSection?.Grid != null )
-			RebuildOverlay();
-		else
-			_overlay.Hide();
-	}
 
 	SpatialApiClient CreateClient() => new( _connection.IngestUrl, _connection.SecretKey );
 
@@ -383,23 +517,59 @@ public sealed class AnalyticsDock : Widget
 		}
 	}
 
-	async System.Threading.Tasks.Task LoadScenesAsync( VisualizerSection section )
+	async System.Threading.Tasks.Task LoadScenesAsync( SectionBase section )
 	{
 		try
 		{
 			SetSectionStatus( section, "Loading scenes…" );
 			var response = await CreateClient().GetScenesAsync( section.Query.From.Trim(), section.Query.To.Trim() );
 			var selected = section.Scene.CurrentText;
+			section.Suppress = true;
 			section.Scene.Clear();
 			foreach ( var scene in response.Scenes )
-				section.Scene.AddItem( scene.Scene );
+				section.Scene.AddItem( scene.Scene, onSelected: () => TriggerAutoRefresh( section ) );
 			if ( !string.IsNullOrEmpty( selected ) && response.Scenes.Any( s => s.Scene == selected ) )
 				section.Scene.TrySelectNamed( selected );
+			section.Suppress = false;
 			SetSectionStatus( section, response.Scenes.Count == 0 ? "No scenes with spatial data in this range." : $"{response.Scenes.Count} scene(s)." );
+			// Reflect the now-selected scene (first item or restored) without a click.
+			TriggerAutoRefresh( section );
 		}
 		catch ( SpatialApiException e )
 		{
 			SetSectionStatus( section, e.StatusCode == 401 ? "Invalid secret key." : $"Scene fetch failed: {e.Message}" );
+		}
+	}
+
+	// Event types are scoped to the picked scene when one is selected, else to the
+	// whole range. The list is spatial-only (server-side), so every option yields
+	// a non-empty heatmap.
+	async System.Threading.Tasks.Task LoadEventTypesAsync( VisualizerSection section )
+	{
+		try
+		{
+			SetSectionStatus( section, "Loading event types…" );
+			var scene = section.Scene.CurrentText;
+			var response = await CreateClient().GetEventTypesAsync(
+				section.Query.From.Trim(), section.Query.To.Trim(),
+				string.IsNullOrWhiteSpace( scene ) ? null : scene );
+			var selected = section.EventType.CurrentText;
+			section.Suppress = true;
+			section.EventType.Clear();
+			foreach ( var type in response.EventTypes )
+				section.EventType.AddItem( type, onSelected: () => TriggerAutoRefresh( section ) );
+			if ( !string.IsNullOrEmpty( selected ) && response.EventTypes.Any( t => t == selected ) )
+				section.EventType.TrySelectNamed( selected );
+			section.Suppress = false;
+			SetSectionStatus( section, response.EventTypes.Count == 0
+				? "No spatial event types in this range."
+				: $"{response.EventTypes.Count} event type(s)." );
+			// Apply the now-selected event type to the heatmap without a click.
+			TriggerAutoRefresh( section );
+		}
+		catch ( SpatialApiException e )
+		{
+			SetSectionStatus( section, e.StatusCode == 401 ? "Invalid secret key." : $"Event-type fetch failed: {e.Message}" );
 		}
 	}
 
@@ -414,14 +584,9 @@ public sealed class AnalyticsDock : Widget
 			SetSectionStatus( section, "Pick a scene first (Load Scenes)." );
 			return;
 		}
-		if ( section.Query.VoxelSize <= 0f )
-		{
-			SetSectionStatus( section, "Voxel size must be a positive number." );
-			return;
-		}
 
-		var metricKey = section.Query.MetricKey.Trim();
-		var useMetric = !string.IsNullOrEmpty( metricKey );
+		// Empty event type aggregates every spatial type for the scene.
+		var eventType = section.EventType.CurrentText;
 
 		try
 		{
@@ -430,38 +595,35 @@ public sealed class AnalyticsDock : Widget
 			var response = await CreateClient().GetVoxelsAsync( new SpatialApiClient.VoxelsQuery
 			{
 				Scene = scene,
-				VoxelSize = section.Query.VoxelSize,
+				VoxelSize = DefaultVoxelSize,
 				From = section.Query.From.Trim(),
 				To = section.Query.To.Trim(),
-				EventType = section.Query.EventType.Trim(),
-				MetricKey = useMetric ? metricKey : null,
-				MetricAgg = section.Query.MetricAgg.ToString().ToLowerInvariant(),
+				EventType = string.IsNullOrWhiteSpace( eventType ) ? "" : eventType.Trim(),
 			} );
 
 			section.Voxels = response.Voxels
 				.Select( v => new HeatmapVoxel( v.X, v.Y, v.Z, v.Count, v.Value ) )
 				.ToList();
 			section.FetchedVoxelSize = response.VoxelSize;
-			section.FetchedUseMetric = useMetric;
-			section.Grid = DensityGridBuilder.Build( section.Voxels, section.FetchedVoxelSize, useMetric );
+			section.Grid = DensityGridBuilder.Build( section.Voxels, section.FetchedVoxelSize, false );
 
 			if ( section.Voxels.Count == 0 )
 			{
-				if ( ActiveSection == section )
+				if ( ActiveVoxelSection == section )
 					_overlay.Hide();
 				SetSectionStatus( section, "No data for this query." );
 				return;
 			}
 			if ( section.Grid == null )
 			{
-				if ( ActiveSection == section )
+				if ( ActiveVoxelSection == section )
 					_overlay.Hide();
-				SetSectionStatus( section, $"Grid exceeds {DensityGridBuilder.MaxGridCells:N0} cells — try a larger voxel size." );
+				SetSectionStatus( section, $"Grid exceeds {DensityGridBuilder.MaxGridCells:N0} cells for this scene." );
 				return;
 			}
 
 			// Refreshing a section makes it the shown one; the toggle change
-			// handler turns the other section off and rebuilds the overlay.
+			// handler turns the others off and rebuilds the overlay.
 			SetVisibleToggle( section.RenderSo, true );
 			RebuildOverlay();
 			SetSectionStatus( section, response.Truncated
@@ -484,22 +646,175 @@ public sealed class AnalyticsDock : Widget
 		}
 	}
 
-	void RebuildOverlay()
+	async System.Threading.Tasks.Task RefreshTrajectoriesAsync( TrajectorySection section )
 	{
-		var section = ActiveSection;
-		if ( section?.Grid == null )
+		if ( section.Fetching )
 			return;
 
-		var world = SceneEditorSession.Active?.Scene?.SceneWorld;
-		if ( world == null )
+		var scene = section.Scene.CurrentText;
+		if ( string.IsNullOrWhiteSpace( scene ) )
 		{
-			SetSectionStatus( section, "No active editor scene." );
+			SetSectionStatus( section, "Pick a scene first (Load Scenes)." );
 			return;
 		}
 
-		var mode = section == _fogSection ? HeatmapRenderMode.Fog : HeatmapRenderMode.Cubes;
-		_overlay.Show( world, mode, section.Grid, section.Voxels, section.FetchedVoxelSize, section.FetchedUseMetric,
-			_fog.Density, _fog.Falloff, _fog.Steps );
+		try
+		{
+			section.Fetching = true;
+			SetSectionStatus( section, "Fetching trajectories…" );
+			var response = await CreateClient().GetTrajectoriesAsync(
+				scene, section.Query.From.Trim(), section.Query.To.Trim() );
+
+			section.Trajectories = response.Trajectories;
+
+			if ( section.Trajectories.Count == 0 )
+			{
+				if ( _lines.Visible )
+					_overlay.Hide();
+				SetSectionStatus( section, "No trajectories for this query." );
+				return;
+			}
+
+			SetVisibleToggle( section.RenderSo, true );
+			RebuildOverlay();
+			SetSectionStatus( section, response.Truncated
+				? $"{section.Trajectories.Count} paths (result limit hit — data truncated)."
+				: $"{section.Trajectories.Count} paths." );
+		}
+		catch ( SpatialApiException e )
+		{
+			SetSectionStatus( section, e.StatusCode switch
+			{
+				401 => "Invalid secret key.",
+				400 => "Invalid query parameters.",
+				0 => $"Network error: {e.Message}. Check the ingest URL and retry.",
+				_ => $"Request failed: {e.Message}",
+			} );
+		}
+		finally
+		{
+			section.Fetching = false;
+		}
+	}
+
+	async System.Threading.Tasks.Task RefreshNavRoutesAsync( TrajectorySection section )
+	{
+		if ( section.Fetching )
+			return;
+
+		var scene = section.Scene.CurrentText;
+		if ( string.IsNullOrWhiteSpace( scene ) )
+		{
+			SetSectionStatus( section, "Pick a scene first (Load Scenes)." );
+			return;
+		}
+
+		try
+		{
+			section.Fetching = true;
+			SetSectionStatus( section, "Fetching trajectories…" );
+			var response = await CreateClient().GetTrajectoriesAsync(
+				scene, section.Query.From.Trim(), section.Query.To.Trim() );
+
+			// Resolve the walked route through the navmesh once, here — pathfinding
+			// isn't free, so look-only changes reuse the cached routes.
+			var navMesh = SceneEditorSession.Active?.Scene?.NavMesh;
+			section.Routes = response.Trajectories
+				.Select( t => BuildNavRoute( navMesh, t.Points ) )
+				.Where( r => r.Count >= 2 )
+				.ToList();
+
+			if ( section.Routes.Count == 0 )
+			{
+				if ( IsVisible( section.RenderSo ) )
+					_overlay.Hide();
+				SetSectionStatus( section, "No trajectories for this query." );
+				return;
+			}
+
+			SetVisibleToggle( section.RenderSo, true );
+			RebuildOverlay();
+			var note = navMesh is null ? " (no navmesh — straight estimates)" : "";
+			SetSectionStatus( section, response.Truncated
+				? $"{section.Routes.Count} route(s){note} (data truncated)."
+				: $"{section.Routes.Count} route(s){note}." );
+		}
+		catch ( SpatialApiException e )
+		{
+			SetSectionStatus( section, e.StatusCode switch
+			{
+				401 => "Invalid secret key.",
+				400 => "Invalid query parameters.",
+				0 => $"Network error: {e.Message}. Check the ingest URL and retry.",
+				_ => $"Request failed: {e.Message}",
+			} );
+		}
+		finally
+		{
+			section.Fetching = false;
+		}
+	}
+
+	// Estimate the walked route between successive samples by asking the scene
+	// navmesh for a path; fall back to a straight segment when the navmesh can't
+	// connect two points (or the scene has no navmesh).
+	static List<Vector3> BuildNavRoute( Sandbox.Navigation.NavMesh navMesh, IReadOnlyList<TrajectoryPoint> points )
+	{
+		var route = new List<Vector3>();
+		for ( var i = 0; i < points.Count - 1; i++ )
+		{
+			var a = new Vector3( points[i].X, points[i].Y, points[i].Z );
+			var b = new Vector3( points[i + 1].X, points[i + 1].Y, points[i + 1].Z );
+
+			List<Vector3> seg = null;
+			if ( navMesh is not null )
+			{
+				// GetSimplePath is obsolete in favour of CalculatePath, but it returns
+				// the point list directly and is all this estimate needs.
+				try { seg = navMesh.GetSimplePath( a, b ); }
+				catch { seg = null; }
+			}
+			if ( seg is null || seg.Count < 2 )
+				seg = new List<Vector3> { a, b };
+
+			// Skip each segment's first point after the first to drop the duplicate
+			// vertex shared with the previous segment's end.
+			for ( var s = route.Count == 0 ? 0 : 1; s < seg.Count; s++ )
+				route.Add( seg[s] );
+		}
+		return route;
+	}
+
+	void RebuildOverlay()
+	{
+		var world = SceneEditorSession.Active?.Scene?.SceneWorld;
+
+		if ( _fog.Visible && _fogSection.Grid != null )
+		{
+			if ( world == null ) { SetSectionStatus( _fogSection, "No active editor scene." ); return; }
+			_overlay.Show( world, HeatmapRenderMode.Fog, _fogSection.Grid, _fogSection.Voxels,
+				_fogSection.FetchedVoxelSize, false, _fog.Density, _fog.Falloff );
+		}
+		else if ( _cubes.Visible && _cubesSection.Grid != null )
+		{
+			if ( world == null ) { SetSectionStatus( _cubesSection, "No active editor scene." ); return; }
+			_overlay.Show( world, HeatmapRenderMode.Cubes, _cubesSection.Grid, _cubesSection.Voxels,
+				_cubesSection.FetchedVoxelSize, false, _fog.Density, _fog.Falloff );
+		}
+		else if ( _lines.Visible && _linesSection.Trajectories is { Count: > 0 } )
+		{
+			if ( world == null ) { SetSectionStatus( _linesSection, "No active editor scene." ); return; }
+			_overlay.ShowLines( world, _linesSection.Trajectories, _lines.LineWidth );
+		}
+		else if ( _navRoutes.Visible && _navSection.Routes is { Count: > 0 } )
+		{
+			if ( world == null ) { SetSectionStatus( _navSection, "No active editor scene." ); return; }
+			_overlay.ShowNavRoutes( world, _navSection.Routes, _navRoutes.LineWidth, _navRoutes.ArrowSpacing );
+		}
+		else
+		{
+			_overlay.Hide();
+		}
 	}
 
 	public override void OnDestroyed()
