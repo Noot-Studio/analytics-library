@@ -83,6 +83,23 @@ public class AnalyticsClientTests
 	}
 
 	[TestMethod]
+	public void SessionStart_CarriesProviderProperties()
+	{
+		var opts = Opts();
+		opts.SessionPropertiesProvider = () =>
+			new Dictionary<string, object> { ["map"] = "de_dust2", ["game_mode"] = "competitive" };
+		var client = new AnalyticsClient( "pk_test", opts, new FakeSender() );
+		client.Start();
+
+		var start = client.PeekLast();
+		Assert.AreEqual( "session_start", start.Type );
+		var props = start.Properties as Dictionary<string, object>;
+		Assert.IsNotNull( props );
+		Assert.AreEqual( "de_dust2", props!["map"] );
+		Assert.AreEqual( "competitive", props["game_mode"] );
+	}
+
+	[TestMethod]
 	public void Enqueue_UsesExplicitPlayerId_WhenGiven()
 	{
 		var client = new AnalyticsClient( "pk_test", Opts(), new FakeSender() );

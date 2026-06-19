@@ -35,4 +35,12 @@ public sealed class AnalyticsOptions
 	/// confident, misleading heatmap hotspot, a missing one just drops out).
 	/// </summary>
 	public Func<string, Vector3?>? PositionResolver { get; set; }
+
+	/// <summary>
+	/// Properties to attach to the session_start event — typically
+	/// <c>{ map, game_mode }</c> so the Maps &amp; Modes dashboard can group
+	/// sessions. Called once when the session starts; return null for none.
+	/// AnalyticsComponent wires this to its Map/GameMode fields.
+	/// </summary>
+	public Func<object?>? SessionPropertiesProvider { get; set; }
 }

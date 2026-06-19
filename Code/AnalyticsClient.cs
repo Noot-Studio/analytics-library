@@ -43,7 +43,7 @@ public sealed class AnalyticsClient
 
 		_cts = new CancellationTokenSource();
 		if ( _options.TrackSessions )
-			Enqueue( "session_start" );
+			Enqueue( "session_start", properties: ResolveSessionProperties() );
 
 		_ = FlushLoop( _cts.Token );
 	}
@@ -124,6 +124,19 @@ public sealed class AnalyticsClient
 		await FlushAsync();
 		_cts?.Dispose();
 		_cts = null;
+	}
+
+	// Run the user-supplied session-properties provider once at session start. Like
+	// the scene/position providers it runs user code, so a throw degrades to "no
+	// session properties" rather than dropping the session_start event.
+	object? ResolveSessionProperties()
+	{
+		if ( _options.SessionPropertiesProvider is null )
+			return null;
+
+		try { return _options.SessionPropertiesProvider(); }
+		catch ( Exception e ) { Log.Warning( $"[Analytics] SessionPropertiesProvider threw: {e.Message}" ); }
+		return null;
 	}
 
 	async Task FlushLoop( CancellationToken ct )

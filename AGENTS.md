@@ -19,7 +19,7 @@ It is a **standalone git repository**. In the analytics monorepo it is mounted a
 Three ways to send events, all funneling into the same core:
 
 - **`Analytics.Init(publishableKey, options)` / `Track(type, props?, scene?, position?, playerId?)` / `Flush()` / `Shutdown()`** — the standalone core. No component required.
-- **`AnalyticsComponent`** — optional drop-in. Set `PublishableKey` in the inspector; it auto-`Init`s the core and emits `scene_loaded`, `player_connected`, `player_disconnected`. Owns `Shutdown` only if it did the `Init`.
+- **`AnalyticsComponent`** — optional drop-in. Set `PublishableKey` in the inspector; it auto-`Init`s the core and emits `scene_loaded`, `player_connected`, `player_disconnected`, and tags `session_start` with its `Map`/`GameMode` fields (feeds the Maps & Modes dashboard). Owns `Shutdown` only if it did the `Init`.
 - **`[Track("name")]`** on a method (emit on call; `Params = true` captures args) or property (emit `{ value }` on change). Codegen sugar over `Track`.
 
 Default events: `session_start`/`session_end` (core), `scene_loaded` + `player_connected`/`player_disconnected` (component; connect/disconnect are host-only).
@@ -28,7 +28,7 @@ Default events: `session_start`/`session_end` (core), `scene_loaded` + `player_c
 
 ## File map (`Code/`)
 
-`AnalyticsEvent` (wire model) · `AnonymousId` (id hashing) · `EventBuffer` (buffer) · `IEventSender`/`HttpEventSender` (transport) · `AnalyticsOptions` (config) · `AnalyticsClient` (core) · `Analytics` (facade) · `TrackAttribute` (`[Track]`) · `AnalyticsComponent` (session/lifecycle drop-in) · `AnalyticsMovementComponent` + `MovementSampler` (per-entity position tracking, throttled, one event per sample). Aggregating spatial trackers (client-accumulate, flush one batch per window): `SpatialGrid`/`CellAccumulator`/`LineSimplifier` (pure helpers) · `AnalyticsDwellComponent` + `AnalyticsHeatmapComponent` (per-cell → `spatial_cells` batch with an open `kind` string) · `AnalyticsTrajectoryComponent` (RDP-simplified path → `trajectory` batch). Tests in `UnitTests/`; run with `dotnet test UnitTests/analytics.unittest.csproj`.
+`AnalyticsEvent` (wire model) · `AnonymousId` (id hashing) · `EventBuffer` (buffer) · `IEventSender`/`HttpEventSender` (transport) · `AnalyticsOptions` (config) · `AnalyticsClient` (core) · `Analytics` (facade) · `TrackAttribute` (`[Track]`) · `AnalyticsComponent` (session/lifecycle drop-in) · `AnalyticsFpsComponent` + `FpsSampler` (per-client frame-rate, one averaged non-spatial `fps_sample` per window) · `AnalyticsFpsHeatmapComponent` (positioned `fps_sample` per window — pawn-attached, owner-only, voxelized into avg/min/max/sum FPS by the spatial heatmap) · `AnalyticsMovementComponent` + `MovementSampler` (per-entity position tracking, throttled, one event per sample). Aggregating spatial trackers (client-accumulate, flush one batch per window): `SpatialGrid`/`CellAccumulator`/`LineSimplifier` (pure helpers) · `AnalyticsDwellComponent` + `AnalyticsHeatmapComponent` (per-cell → `spatial_cells` batch with an open `kind` string) · `AnalyticsTrajectoryComponent` (RDP-simplified path → `trajectory` batch). Tests in `UnitTests/`; run with `dotnet test UnitTests/analytics.unittest.csproj`.
 
 ## What the SDK must do
 
