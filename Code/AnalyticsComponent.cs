@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Sandbox;
 
 namespace Noot.Analytics;
@@ -20,6 +21,18 @@ public sealed class AnalyticsComponent : Component, Component.INetworkListener
 	[Property] public bool TrackSessions { get; set; } = true;
 	[Property] public bool TrackSceneLoads { get; set; } = true;
 	[Property] public bool TrackConnections { get; set; } = true;
+
+	/// <summary>
+	/// Map this session is playing, tagged onto session_start so the Maps &amp; Modes
+	/// dashboard can group it. Leave empty to fall back to a loaded MapInstance's
+	/// name. Note: resolved once when the session starts (on init), so a map that
+	/// streams in asynchronously after that won't be captured — set this explicitly
+	/// in those cases.
+	/// </summary>
+	[Property] public string Map { get; set; } = "";
+
+	/// <summary>Game mode this session is playing, tagged onto session_start alongside the map.</summary>
+	[Property] public string GameMode { get; set; } = "";
 
 	/// <summary>Tag every event with the active scene's title when no scene is passed explicitly.</summary>
 	[Property] public bool AutoScene { get; set; } = true;
@@ -49,6 +62,7 @@ public sealed class AnalyticsComponent : Component, Component.INetworkListener
 			MaxBatchSize = MaxBatchSize,
 			SceneProvider = AutoScene ? GetSceneTitle : null,
 			PositionResolver = AutoPosition ? ResolvePlayerPosition : null,
+			SessionPropertiesProvider = BuildSessionProperties,
 		} );
 		_ownsClient = true;
 	}
@@ -68,6 +82,35 @@ public sealed class AnalyticsComponent : Component, Component.INetworkListener
 			_mapInstance.OnMapLoaded += OnMapLoaded;
 			break;
 		}
+	}
+
+	// session_start properties for the Maps & Modes dashboard. Explicit Map wins;
+	// otherwise fall back to a MapInstance already present in the scene. Returns
+	// null when nothing is set so session_start stays clean.
+	object? BuildSessionProperties()
+	{
+		var map = string.IsNullOrEmpty( Map ) ? ResolveMapName() : Map;
+
+		var properties = new Dictionary<string, object>();
+		if ( !string.IsNullOrEmpty( map ) )
+			properties["map"] = map;
+		if ( !string.IsNullOrEmpty( GameMode ) )
+			properties["game_mode"] = GameMode;
+
+		return properties.Count > 0 ? properties : null;
+	}
+
+	// Raw map ident (not the scene:map composite GetSceneTitle builds) — the
+	// dashboard groups sessions by this exact properties.map value.
+	string ResolveMapName()
+	{
+		if ( !Scene.IsValid() )
+			return "";
+
+		foreach ( var map in Scene.GetAllComponents<MapInstance>() )
+			return map.MapName ?? "";
+
+		return "";
 	}
 
 	void OnMapLoaded() =>
